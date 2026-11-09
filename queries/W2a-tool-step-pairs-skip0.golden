@@ -1,0 +1,24 @@
++---------------------------------------------------------------+-------------+----------+----------+
+| pattern                                                       | occurrences | attempts | problems |
++---------------------------------------------------------------+-------------+----------+----------+
+| bash → bash                                                   | 3180        | 530      | 199      |
+| get_alerts + kubernetes_tabular_query → bash                  | 206         | 203      | 109      |
+| bash → bash + fetch_pod_logs                                  | 219         | 173      | 109      |
+| bash + fetch_pod_logs → bash                                  | 217         | 170      | 108      |
+| bash → kubernetes_tabular_query                               | 222         | 169      | 105      |
+| get_alerts + kubernetes_tabular_query → bash + fetch_pod_logs | 123         | 123      | 82       |
+| bash + fetch_pod_logs → bash + fetch_pod_logs                 | 128         | 99       | 73       |
+| kubernetes_tabular_query → bash                               | 115         | 91       | 67       |
+| bash → fetch_pod_logs                                         | 131         | 76       | 60       |
+| bash → bash + get_metrics                                     | 88          | 71       | 55       |
+| bash + get_metrics → bash                                     | 61          | 55       | 43       |
+| kubernetes_tabular_query → kubernetes_tabular_query           | 71          | 49       | 38       |
+| bash → fetch_pod_logs ×2                                      | 55          | 49       | 34       |
+| fetch_pod_logs → bash                                         | 96          | 42       | 35       |
+| bash → bash ×2                                                | 49          | 41       | 35       |
+| fetch_pod_logs → fetch_pod_logs                               | 81          | 40       | 31       |
+| bash ×2 → bash                                                | 44          | 39       | 35       |
+| fetch_pod_logs ×2 → bash                                      | 43          | 37       | 31       |
+| bash → kubernetes_jq_query                                    | 48          | 37       | 29       |
+| bash → fetch_pod_logs + get_metrics                           | 50          | 35       | 25       |
++---------------------------------------------------------------+-------------+----------+----------+
