@@ -79,7 +79,7 @@ S1 matters most for the ASAP angle ("which PromQL actually mattered"). Add it on
 |---|-------------|-----------|
 | M0 ✅ | Trace survey | Section 1 |
 | M1 ✅ | Ingest and SQL | Parquet tables built; T1 and T5 (exact-string version) pass |
-| M2 | PromQL UDFs | T2, T3, and T5 (normalized version) pass; parse coverage reported (% of get_metrics parsed) |
+| M2 ✅ | PromQL UDFs | T2, T3, and T5 (normalized version) pass; parse coverage reported (% of get_metrics parsed) |
 | M3 | Linear walks (SQL baseline) | W2 matches the viewer oracle; T4, W3, and W4 pass |
 | M4 | Tree and cross walks | W1 and W5 pass |
 | M5 | Walk operators | `seq_match`/`walk` give the same output as the baselines; timings at 1× and the synthetic scales |

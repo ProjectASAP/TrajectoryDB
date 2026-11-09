@@ -3,9 +3,9 @@
 WITH att AS (
   SELECT problem_id, count(DISTINCT run) AS runs_attempted FROM sessions GROUP BY problem_id
 ), pq AS (
-  SELECT s.problem_id, t.query, count(DISTINCT s.run) AS runs_issued
-  FROM tool_calls t JOIN sessions s USING (session_id)
-  WHERE t.fn = 'get_metrics' GROUP BY s.problem_id, t.query
+  SELECT s.problem_id, promql_normalize(t.query, 'exact') AS query, count(DISTINCT s.run) AS runs_issued
+  FROM promql t JOIN sessions s USING (session_id)
+  GROUP BY 1, 2
 )
 SELECT a.runs_attempted, pq.runs_issued, count(*) AS problem_query_pairs
 FROM pq JOIN att a USING (problem_id)

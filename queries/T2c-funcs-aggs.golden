@@ -1,0 +1,23 @@
++------+--------------------+------+----------+
+| kind | name               | uses | sessions |
++------+--------------------+------+----------+
+| agg  | sum                | 843  | 183      |
+| agg  | count              | 69   | 52       |
+| agg  | topk               | 55   | 24       |
+| agg  | max                | 6    | 5        |
+| agg  | avg                | 1    | 1        |
+| func | rate               | 767  | 196      |
+| func | increase           | 221  | 43       |
+| func | histogram_quantile | 51   | 29       |
+| func | vector             | 18   | 15       |
+| func | max_over_time      | 12   | 9        |
+| func | timestamp          | 12   | 6        |
+| func | time               | 6    | 5        |
+| func | changes            | 5    | 5        |
+| func | deriv              | 3    | 2        |
+| func | min_over_time      | 2    | 2        |
+| func | avg_over_time      | 1    | 1        |
+| func | count_over_time    | 1    | 1        |
+| func | last_over_time     | 1    | 1        |
+| func | sort_desc          | 1    | 1        |
++------+--------------------+------+----------+

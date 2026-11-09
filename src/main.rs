@@ -3,6 +3,8 @@
 //!   tdb sql "<query>"           run SQL over db/
 //!   tdb bench [--update]        run queries/*.sql, diff against .golden
 
+mod promql;
+
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
 use serde_json::{json, Value};
@@ -120,6 +122,13 @@ async fn ctx() -> Res<SessionContext> {
         let p = Path::new(DB).join(format!("{name}.parquet"));
         c.register_parquet(*name, p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
     }
+    promql::register(&c);
+    // every PromQL string the agent sent: native tool + query= params inside bash (curl to /api/v1/query*)
+    c.sql("CREATE VIEW promql AS
+        SELECT session_id, step_id, call_idx, call_id, 'get_metrics' AS via, query FROM tool_calls WHERE fn = 'get_metrics'
+        UNION ALL
+        SELECT session_id, step_id, call_idx, call_id, 'bash_url' AS via, unnest(url_promql(command)) AS query
+        FROM tool_calls WHERE fn = 'bash' AND command LIKE '%query=%'").await?;
     Ok(c)
 }
 

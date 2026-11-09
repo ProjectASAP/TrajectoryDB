@@ -27,3 +27,26 @@ cd ../TrajectoryDB && cargo build --release
 
 **Open questions**
 - Should the T5 normalized version strip label values, or only reorder and canonicalize them? This decides what counts as "the same query" for ASAP caching.
+
+## 2026-11-09 — M2 done
+
+**What was built**
+- `src/promql.rs` holds the extraction UDFs, built on `promql-parser` 0.11.1 with one AST walk per call:
+  - list functions: `promql_metrics`, `promql_funcs`, `promql_aggs` ("sum by (a,b)"), `promql_matchers` ("label op value"), `promql_ranges`, `url_promql(text)`
+  - scalar functions: `promql_error(q)` and `promql_normalize(q, mode)`. `mode` only accepts `'exact'`; other modes go in the `match` there. Unit test: `cargo test`.
+- A `promql` view, registered in `ctx()`, collects every PromQL string the agent sent: `get_metrics.query` plus `query=` parameters found inside bash curl calls. Columns: session_id, step_id, call_idx, call_id, via, query.
+- New queries: T2a–T2g and T3. T5a–c now read `promql_normalize(query, 'exact')` over the `promql` view.
+
+**Numbers**
+- There are 2,741 PromQL strings: 2,738 from `get_metrics` and 3 from bash (2 sessions). 99.6% parse.
+- All 10 strings the parser rejects also got HTTP 400 from Prometheus (T2g), so the parser agrees with the backend on this data. Typical agent mistakes are `offset` placed after `rate()`, scalar comparisons without `bool`, and a comma between two queries.
+- Shape (T2a): 34% use functions, 32% aggregations, 68% label matchers, 38% range windows. 427 have no metric name, and `__name__=~` appears 360 times, which is metric discovery by regex.
+- The common pattern is `sum(rate(x[1m|2m|5m]))`. Top metrics are locust failures, span-metric calls, pg_stat_activity, probe_success, and redis memory.
+- The T5 shifts from M1 are entirely the 3 bash queries.
+- Cross-check: 767 `rate()` calls in T2c reconciles with a regex count over the raw JSON (773 total = 766 parsed + 7 inside unparseable queries; +1 from bash).
+
+**Data gotchas found**
+- `observations.status` is unreliable. 109 `get_metrics` results marked `success` contain errors, including all 400s. T4 must detect errors from `content`.
+- `sessions.application` is blank for 170 of 601 sessions, about 28% in every run, because SREGym extra metadata is missing. It could be derived from problem_id or namespace if needed.
+
+**Next (M3)**: linear walks. W2 (sequence pattern vs. the viewer oracle), T4 (failed/empty metric result, then the next call), W3 (refinement chains), and W4 (diagnosis vs. mitigation). Plain SQL with window functions first.

@@ -1,7 +1,7 @@
 +----------------------------------------------------------+--------------------+-------+--------------------+
 | query                                                    | sessions_repeating | calls | max_in_one_session |
 +----------------------------------------------------------+--------------------+-------+--------------------+
-| db_pool_capacity{instance=~"svc-channel.*"}              | 10                 | 20    | 2                  |
+| db_pool_capacity{instance=~"svc-channel.*"}              | 10                 | 21    | 3                  |
 | mysql_up                                                 | 6                  | 17    | 3                  |
 | redis_memory_used_bytes{instance=~".*queue.*"}           | 5                  | 11    | 3                  |
 | db_pool_checked_out{instance=~"svc-channel.*"}           | 5                  | 10    | 2                  |

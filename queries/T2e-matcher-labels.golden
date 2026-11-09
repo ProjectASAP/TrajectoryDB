@@ -1,0 +1,24 @@
++--------------+----+------+
+| label        | op | uses |
++--------------+----+------+
+| namespace    | =  | 474  |
+| instance     | =~ | 399  |
+| __name__     | =~ | 360  |
+| datname      | =  | 193  |
+| service_name | =  | 117  |
+| job          | =  | 99   |
+| pod          | =~ | 91   |
+| status_code  | =  | 74   |
+| span_name    | =~ | 65   |
+| instance     | =  | 62   |
+| name         | =  | 54   |
+| service_name | =~ | 52   |
+| relname      | =~ | 51   |
+| db           | =  | 49   |
+| name         | =~ | 44   |
+| __name__     | !~ | 39   |
+| span_name    | =  | 38   |
+| route        | =  | 33   |
+| alertstate   | =  | 20   |
+| cmd          | =  | 20   |
++--------------+----+------+
