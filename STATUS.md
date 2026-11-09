@@ -46,7 +46,7 @@ cd ../TrajectoryDB && cargo build --release
 - Cross-check: 767 `rate()` calls in T2c reconciles with a regex count over the raw JSON (773 total = 766 parsed + 7 inside unparseable queries; +1 from bash).
 
 **Data gotchas found**
-- `observations.status` is unreliable. 109 `get_metrics` results marked `success` contain errors, including all 400s. T4 must detect errors from `content`.
+- `observations.status` is unreliable. 13 `get_metrics` results marked `success` are backend 400 errors. *(Corrected in M3: an earlier "109" came from a loose `%error%` match on metric names.)* Use the `metric_results` view, which classifies results from `content`.
 - `sessions.application` is blank for 170 of 601 sessions, about 28% in every run, because SREGym extra metadata is missing. It could be derived from problem_id or namespace if needed.
 
 **Next (M3)**: linear walks. W2 (sequence pattern vs. the viewer oracle), T4 (failed/empty metric result, then the next call), W3 (refinement chains), and W4 (diagnosis vs. mitigation). Plain SQL with window functions first.

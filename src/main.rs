@@ -123,12 +123,9 @@ async fn ctx() -> Res<SessionContext> {
         c.register_parquet(*name, p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
     }
     promql::register(&c);
-    // every PromQL string the agent sent: native tool + query= params inside bash (curl to /api/v1/query*)
-    c.sql("CREATE VIEW promql AS
-        SELECT session_id, step_id, call_idx, call_id, 'get_metrics' AS via, query FROM tool_calls WHERE fn = 'get_metrics'
-        UNION ALL
-        SELECT session_id, step_id, call_idx, call_id, 'bash_url' AS via, unnest(url_promql(command)) AS query
-        FROM tool_calls WHERE fn = 'bash' AND command LIKE '%query=%'").await?;
+    for v in include_str!("views.sql").split(';').filter(|v| v.lines().any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"))) {
+        c.sql(v).await?;
+    }
     Ok(c)
 }
 
