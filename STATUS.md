@@ -74,3 +74,30 @@ cd ../TrajectoryDB && cargo build --release
 - `promql_steps` uses `metric_results` (get_metrics only), so the 3 bash PromQL queries are not in the walks.
 
 **Next (M4)**: tree and cross walks. W1 (observation → ancestry plus context replay up to a call) and W5 (PromQL common across runs of a problem vs. specific to one run). After that, M5 adds walk operators (`seq_match`, `walk`) that must match these baselines, with timings at synthetic scale.
+
+## 2026-11-09 — M4 done (tree + cross walks, plain SQL)
+
+**What was built**
+- New queries: W1a–c and W5a–b. 26 queries in total, and bench is green.
+- W1a walks up from one fixed observation (the first `too_large` get_metrics result) to its call, step, stage and session.
+- W1b replays everything the agent had seen when it issued that call: earlier messages, calls and results, plus the target step's own message and calls.
+- W1c aggregates the context in front of every PromQL call.
+- W5a/b compare runs of the same problem at the metric-name level.
+
+**Numbers**
+- W1c: a PromQL call in diagnosis comes after about 9 prior steps and 67 KiB of earlier tool results, with 52.8k prompt tokens, 89% of them cached. In mitigation the figures are about 28 steps, 108 KiB and 84.3k tokens, 92% cached. This is the paper's "redundant context" in numbers: about 90% of every PromQL-issuing request is replayed prefix. Cross-checked in Python (diagnosis row exact).
+- W5a: at the metric-name level, cross-run reuse is much higher than at the exact-string level. For problems attempted in 3 runs, 114 of 815 (14%) (problem, metric) pairs are used in all three runs, against 43 of 2,140 (2%) exact strings in T5c.
+- W5b: same-problem session pairs from different runs share a Jaccard similarity of about 0.25–0.37 on metric names. Pairs where only one run passed are the least similar (0.252, n=37), against 0.354 for both-pass. The sample is small, so this is weak evidence. W5 depends on the parser and has not been cross-checked independently.
+
+**Gotchas**
+- **DataFusion 54 silent wrong result.** `OVER (w ROWS BETWEEN ...)` that refines a named window `w` drops w's `PARTITION BY`, so the frame runs across partitions. Plain `OVER w` is fine. Always write framed windows inline. A minimal repro is in the commit history (2627e9d message). It is worth filing upstream.
+
+**State of the walk baseline (input to M5)**
+| Walk | SQL mechanism | Pain point |
+|---|---|---|
+| W2 seq pattern | `row_number` + self-join on `pos+1..pos+k` | the k-gap join is O(n·k) per partition, and a pattern longer than 2 needs one join per element |
+| T4b / W4c next / prior | self-join + `min(step_id)` + re-join | three joins to say "next PromQL step" |
+| W3 chains | `lag` + running `sum` (gaps and islands) | fine in SQL |
+| W1 ancestry/replay | UNION of per-level joins, filter on `step_id <=` | verbose; every query repeats the target CTE |
+
+**Next (M5)**: walk operators. Candidates: `next_in(partition, order, predicate)` (replaces the T4b/W4c join dance), a sequence-pattern table function for patterns longer than 2, and a `replay(session, step)` table function. Each must reproduce the current goldens. Then add `tdb synth --x N` and time baseline vs. operator.
