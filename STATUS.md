@@ -50,3 +50,27 @@ cd ../TrajectoryDB && cargo build --release
 - `sessions.application` is blank for 170 of 601 sessions, about 28% in every run, because SREGym extra metadata is missing. It could be derived from problem_id or namespace if needed.
 
 **Next (M3)**: linear walks. W2 (sequence pattern vs. the viewer oracle), T4 (failed/empty metric result, then the next call), W3 (refinement chains), and W4 (diagnosis vs. mitigation). Plain SQL with window functions first.
+
+## 2026-11-09 — M3 done (linear walks, plain SQL)
+
+**What was built**
+- Views moved to `src/views.sql`, which is loaded on every context:
+  - `promql`
+  - `metric_results`: each get_metrics call with its result kind (data / empty / refused_duplicate / too_large / backend_error / timeout), classified from content.
+  - `promql_steps`: per-step metric/func/agg/range/matcher sets, `linked` to the previous PromQL step, and `chain_id` via gaps-and-islands.
+- `oracle/check.sh` diffs the W2 goldens against the HolmesGPT viewer's `analysis.md` from PR #10 (the copy is in `oracle/`).
+- New queries: W2a/b, T4a/b, W3a–c, W4a–c. 21 queries in total, and bench is green. Every query runs in ≤ 0.2 s at this scale.
+- Walks are built from window functions (`row_number`, `lag`, running `sum`) plus self-joins on position or step, with no custom operators. This is the baseline for M5.
+
+**Numbers**
+- **W2 = oracle.** The tool-step pair patterns at gap 0 and gap ≤2 reproduce the viewer's top-20 tables exactly (pattern, occurrences, attempts, problems).
+- **T4.** get_metrics results break down as data 81%, empty 13.5%, refused duplicate 3.5%, too large 1.5%, backend error 0.5%, timeout 0.1%. All `too_large` results come from metric-discovery queries (`{__name__=~...}`). In 68% of those cases the next PromQL is another discovery query, usually narrowed; in 24% it is a named metric. After an empty result, the agent stops querying PromQL in that stage 37% of the time, against 23.5% after data.
+- **W3.** 1,755 PromQL steps form 1,226 chains, and 80% of chains are a single step. Inside chains in diagnosis, matchers and ranges change most often (about 76% of linked pairs). In mitigation, 23% of linked pairs are unchanged, which looks like verification polling. The longest diagnosis chain tracks lower diagnosis pass rates: 77% with no diagnosis PromQL → 57% (1) → 40% (2) → 31% (3) → 20% (4+). This is correlation, not causation; harder problems likely drive both.
+- **W4.** About 78% of sessions that use PromQL in both stages re-query at least one diagnosis metric in mitigation. **HolmesGPT's exact-duplicate guard is scoped per stage.** All 95 refusals are same-stage repeats, no same-stage repeat ever runs, and the 46 cross-stage exact repeats all ran. So of T5's 141 get_metrics exact repeats, only 46 actually reached Prometheus.
+- Cross-checks done in Python against the raw JSON: T4 kinds, the `none` and `same_query` shares, the W3 step total and W3c bucket 0. W4c's sum matches T5.
+
+**Gotchas**
+- DataFusion 54 errors (`DuplicateUnqualifiedField`) when two `count(*) FILTER (WHERE EXISTS ...)` appear in one SELECT. Use joins instead.
+- `promql_steps` uses `metric_results` (get_metrics only), so the 3 bash PromQL queries are not in the walks.
+
+**Next (M4)**: tree and cross walks. W1 (observation → ancestry plus context replay up to a call) and W5 (PromQL common across runs of a problem vs. specific to one run). After that, M5 adds walk operators (`seq_match`, `walk`) that must match these baselines, with timings at synthetic scale.
