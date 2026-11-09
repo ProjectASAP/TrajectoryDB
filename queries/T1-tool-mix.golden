@@ -1,0 +1,54 @@
++-----------------------------------+------------+---------------+---------------+------------------+-------+
+| fn                                | stage      | per_sess_pass | per_sess_fail | per_sess_unknown | calls |
++-----------------------------------+------------+---------------+---------------+------------------+-------+
+| bash                              | mitigation | 8.49          | 7.67          | 8.04             | 4862  |
+| fetch_pod_logs                    | diagnosis  | 2.65          | 5.92          | 3.49             | 2260  |
+| bash                              | diagnosis  | 3.45          | 4.03          | 4.2              | 2236  |
+| get_metrics                       | diagnosis  | 1.68          | 4.97          | 4.51             | 1830  |
+| fetch_pod_logs                    | mitigation | 2.12          | 2.74          | 2.84             | 1484  |
+| get_metrics                       | mitigation | 1.55          | 1.49          | 1.45             | 908   |
+| kubernetes_tabular_query          | diagnosis  | 1.19          | 1.4           | 1.18             | 754   |
+| kubernetes_tabular_query          | mitigation | 1.16          | 1.18          | 1.36             | 716   |
+| get_alerts                        | diagnosis  | 1.01          | 1.12          | 1.0              | 627   |
+| kubernetes_jq_query               | diagnosis  | 0.69          | 1.17          | 0.89             | 518   |
+| get_alerts                        | mitigation | 0.34          | 0.38          | 0.14             | 198   |
+| get_traces                        | diagnosis  | 0.17          | 0.6           | 0.14             | 180   |
+| kubernetes_jq_query               | mitigation | 0.23          | 0.41          | 0.17             | 180   |
+| kubectl_top_pods                  | diagnosis  | 0.21          | 0.33          | 0.32             | 155   |
+| get_services                      | diagnosis  | 0.06          | 0.21          | 0.11             | 66    |
+| kubectl_top_pods                  | mitigation | 0.04          | 0.14          | 0.11             | 54    |
+| get_traces                        | mitigation | 0.05          | 0.14          | 0.01             | 50    |
+| kubectl_tabular_query             | mitigation | 0.09          | 0.06          | 0.13             | 50    |
+| tcp_check                         | diagnosis  | 0.05          | 0.13          | 0.04             | 43    |
+| tcp_check                         | mitigation | 0.07          | 0.08          | 0.05             | 41    |
+| kubernetes_count                  | mitigation | 0.05          | 0.07          | 0.05             | 34    |
+| get_operations                    | diagnosis  | 0.03          | 0.06          |                  | 21    |
+| kubectl_top_nodes                 | diagnosis  | 0.02          | 0.05          |                  | 16    |
+| TodoWrite                         | diagnosis  | 0.03          | 0.03          | 0.01             | 15    |
+| fetch_webpage                     | diagnosis  | 0.01          | 0.07          |                  | 15    |
+| get_dependency_graph              | mitigation | 0.02          | 0.04          |                  | 15    |
+| kubectl_tabular_query_placeholder | diagnosis  | 0.02          | 0.04          | 0.01             | 15    |
+| get_dependency_graph              | diagnosis  | 0.01          | 0.05          | 0.01             | 13    |
+| kubectl_tabular_query             | diagnosis  | 0.01          | 0.04          |                  | 12    |
+| kubectl_tabular_query_placeholder | mitigation | 0.02          | 0.01          | 0.01             | 10    |
+| kubectl_top_nodes                 | mitigation | 0.01          | 0.02          | 0.01             | 9     |
+| get_services                      | mitigation | 0.01          | 0.02          |                  | 8     |
+| get_operations                    | mitigation | 0.01          | 0.02          |                  | 7     |
+| kubectl_describe_placeholder      | diagnosis  | 0.01          | 0.01          |                  | 7     |
+| get_prometheus_target             | diagnosis  | 0.0           | 0.02          | 0.01             | 5     |
+| kubectl_count                     | mitigation | 0.01          |               | 0.01             | 4     |
+| kubectl_events_placeholder        | diagnosis  | 0.0           | 0.01          |                  | 3     |
+| fetch_webpage                     | mitigation |               | 0.0           | 0.01             | 2     |
+| kubectl_jq_placeholder            | diagnosis  | 0.01          |               |                  | 2     |
+| kubernetes_count                  | diagnosis  | 0.0           |               | 0.01             | 2     |
+| fetch_fetch_placeholder           | mitigation |               | 0.0           |                  | 1     |
+| get_events_placeholder            | diagnosis  | 0.0           |               |                  | 1     |
+| kubectl_events_placeholder_skip   | diagnosis  |               | 0.01          |                  | 1     |
+| kubectl_get_deploy_placeholder    | mitigation | 0.0           |               |                  | 1     |
+| kubectl_get_events_placeholder    | diagnosis  | 0.0           |               |                  | 1     |
+| kubectl_get_placeholder           | diagnosis  |               | 0.01          |                  | 1     |
+| kubectl_jq_placeholder            | mitigation | 0.0           |               |                  | 1     |
+| kubectl_jq_placeholder_unused     | diagnosis  |               |               | 0.01             | 1     |
+| kubectl_jq_query_placeholder      | mitigation | 0.0           |               |                  | 1     |
+| kubectl_tabular_placeholder       | mitigation |               | 0.0           |                  | 1     |
++-----------------------------------+------------+---------------+---------------+------------------+-------+

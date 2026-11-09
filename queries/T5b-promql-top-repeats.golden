@@ -1,0 +1,19 @@
++----------------------------------------------------------+--------------------+-------+--------------------+
+| query                                                    | sessions_repeating | calls | max_in_one_session |
++----------------------------------------------------------+--------------------+-------+--------------------+
+| db_pool_capacity{instance=~"svc-channel.*"}              | 10                 | 20    | 2                  |
+| mysql_up                                                 | 6                  | 17    | 3                  |
+| redis_memory_used_bytes{instance=~".*queue.*"}           | 5                  | 11    | 3                  |
+| db_pool_checked_out{instance=~"svc-channel.*"}           | 5                  | 10    | 2                  |
+| redis_memory_used_bytes                                  | 4                  | 8     | 2                  |
+| redis_db_keys{db="db0",instance=~".*queue.*"}            | 3                  | 6     | 2                  |
+| probe_success{job="blackbox-ingress-hotel-reservation"}  | 2                  | 5     | 3                  |
+| mysql_global_status_threads_connected                    | 2                  | 4     | 2                  |
+| probe_success{namespace="hotel-reservation"}             | 2                  | 4     | 2                  |
+| rate(pg_stat_database_xact_commit{datname="saleor"}[1m]) | 2                  | 4     | 2                  |
+| rate_requests_received_total                             | 2                  | 4     | 2                  |
+| redis_evicted_keys_total                                 | 2                  | 4     | 2                  |
+| sum(rate(locust_requests_num_failures[1m]))              | 2                  | 4     | 2                  |
+| up{instance=~"svc-notification.*"}                       | 2                  | 4     | 2                  |
+| ALERTS{alertstate="firing"}                              | 1                  | 3     | 3                  |
++----------------------------------------------------------+--------------------+-------+--------------------+
