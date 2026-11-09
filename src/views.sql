@@ -23,3 +23,26 @@ FROM tool_calls t
 JOIN steps st USING (session_id, step_id)
 LEFT JOIN observations o ON o.session_id = t.session_id AND o.call_id = t.call_id
 WHERE t.fn = 'get_metrics';
+
+-- promql_steps: one row per agent step that issued get_metrics, with the union of what its queries touch.
+-- linked = shares a metric name with the previous PromQL step of the same session+stage (other tools may sit between).
+-- chain_id numbers maximal runs of linked steps (gaps-and-islands). Discovery-only steps (no metric name) never link.
+CREATE VIEW promql_steps AS
+WITH s AS (
+  SELECT session_id, stage, step_id, count(*) AS calls,
+    array_distinct(flatten(array_agg(promql_metrics(query))  FILTER (WHERE promql_error(query) IS NULL))) AS metrics,
+    array_distinct(flatten(array_agg(promql_funcs(query))    FILTER (WHERE promql_error(query) IS NULL))) AS funcs,
+    array_distinct(flatten(array_agg(promql_aggs(query))     FILTER (WHERE promql_error(query) IS NULL))) AS aggs,
+    array_distinct(flatten(array_agg(promql_ranges(query))   FILTER (WHERE promql_error(query) IS NULL))) AS ranges,
+    array_distinct(flatten(array_agg(promql_matchers(query)) FILTER (WHERE promql_error(query) IS NULL))) AS matchers
+  FROM metric_results GROUP BY session_id, stage, step_id
+), l AS (
+  SELECT *, row_number() OVER w AS pos,
+    lag(metrics) OVER w AS prev_metrics, lag(funcs) OVER w AS prev_funcs, lag(aggs) OVER w AS prev_aggs,
+    lag(ranges) OVER w AS prev_ranges, lag(matchers) OVER w AS prev_matchers
+  FROM s WINDOW w AS (PARTITION BY session_id, stage ORDER BY step_id)
+), k AS (
+  SELECT *, coalesce(array_has_any(metrics, prev_metrics), false) AS linked FROM l
+)
+SELECT *, sum(CASE WHEN linked THEN 0 ELSE 1 END) OVER (PARTITION BY session_id, stage ORDER BY step_id) AS chain_id
+FROM k;
