@@ -1,0 +1,16 @@
++---------+-------------------------------+------------------------------------------------------------------------+
+| step_id | what                          | text                                                                   |
++---------+-------------------------------+------------------------------------------------------------------------+
+| 1       | system                        |  You are HolmesGPT version 0.45.0, an AI agent for troubleshooting and |
+| 2       | user                          | Diagnose the current SRE incident using live evidence; explain the roo |
+| 3       | call get_alerts               | {}                                                                     |
+| 3       | call kubernetes_tabular_query | {"columns":"NAME:.metadata.name,PHASE:.status.phase,READY:.status.cont |
+| 3       | result                        | [{'labels': {'alertname': 'HTTPProbeFailure', 'instance': 'http://ingr |
+| 3       | result                        | {   "count": 40,   "header": "NAME                                 PHA |
+| 4       | call bash                     | kubectl get events -n slack-spine --sort-by=.lastTimestamp | tail -30; |
+| 4       | call get_metrics              | topk(15, sum by (job,service,role,status,code)(rate(http_requests_tota |
+| 4       | result                        | Tool call rejected: it requires human approval, and approval is not av |
+| 4       | result                        | {'resultType': 'vector', 'result': []}                                 |
+| 5       | call bash                     | kubectl get events -n slack-spine --sort-by=.lastTimestamp | tail -30  |
+| 5       | call get_metrics              | {namespace="slack-spine"}                                              |
++---------+-------------------------------+------------------------------------------------------------------------+

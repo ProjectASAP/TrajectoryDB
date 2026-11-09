@@ -1,0 +1,9 @@
++-----+-------------+----------------------------------+--------------------------------------------------------------------------+
+| lvl | level       | id                               | detail                                                                   |
++-----+-------------+----------------------------------+--------------------------------------------------------------------------+
+| 1   | observation | toolu_01KwtM1isjfqp3JAFEu8pM1z   | The tool call result is too large to return: 1239237/25000 tokens.  Tr   |
+| 2   | tool_call   | toolu_01KwtM1isjfqp3JAFEu8pM1z   | get_metrics: {namespace="slack-spine"}                                   |
+| 3   | step        | 5                                | agent 2026-10-30T05:43:21.578312+00:00 prompt_tok=18804 cached_tok=17564 |
+| 4   | stage       | diagnosis                        | steps 1..15                                                              |
+| 5   | session     | 0203151e4bd14fd785c0e971e3fc6d34 | run-02 ingress_misroute_slack_spine diag_passed=false                    |
++-----+-------------+----------------------------------+--------------------------------------------------------------------------+
