@@ -1,0 +1,24 @@
++-------------------+-----------+------------+-------+
+| tgt               | diagnosis | mitigation | total |
++-------------------+-----------+------------+-------+
+| get pods          | 441       | 2243       | 2684  |
+| get deploy        | 851       | 858        | 1709  |
+| logs              | 572       | 943        | 1515  |
+| get events        | 589       | 277        | 866   |
+| get cm            | 355       | 252        | 607   |
+| get rs            | 446       | 131        | 577   |
+| describe pod      | 368       | 49         | 417   |
+| get endpoints     | 77        | 306        | 383   |
+| exec              | 204       | 139        | 343   |
+| get pod           | 174       | 152        | 326   |
+| apply             | 0         | 291        | 291   |
+| rollout restart   | 0         | 276        | 276   |
+| rollout status    | 0         | 262        | 262   |
+| patch deployment  | 0         | 237        | 237   |
+| get svc           | 146       | 83         | 229   |
+| get svc,endpoints | 120       | 15         | 135   |
+| delete pod        | 0         | 125        | 125   |
+| rollout history   | 80        | 31         | 111   |
+| events            | 82        | 18         | 100   |
+| get configmap     | 39        | 58         | 97    |
++-------------------+-----------+------------+-------+

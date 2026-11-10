@@ -1,0 +1,29 @@
++------------+------------+-------------+-------------+
+| from_m     | to_m       | transitions | pct_of_from |
++------------+------------+-------------+-------------+
+| k8s_state  | k8s_state  | 4841        | 51.4        |
+| k8s_state  | logs       | 2534        | 26.9        |
+| logs       | logs       | 1897        | 38.1        |
+| logs       | k8s_state  | 1818        | 36.5        |
+| k8s_state  | metrics    | 900         | 9.6         |
+| metrics    | metrics    | 860         | 37.9        |
+| k8s_change | k8s_state  | 793         | 52.9        |
+| k8s_state  | k8s_change | 723         | 7.7         |
+| logs       | metrics    | 705         | 14.2        |
+| alerts     | k8s_state  | 654         | 52.1        |
+| metrics    | k8s_state  | 652         | 28.7        |
+| metrics    | logs       | 577         | 25.4        |
+| alerts     | logs       | 441         | 35.1        |
+| k8s_change | k8s_change | 427         | 28.5        |
+| logs       | k8s_change | 249         | 5.0         |
+| k8s_change | logs       | 222         | 14.8        |
+| other      | k8s_state  | 194         | 40.8        |
+| k8s_state  | other      | 180         | 1.9         |
+| k8s_state  | traces     | 142         | 1.5         |
+| logs       | other      | 134         | 2.7         |
+| traces     | k8s_state  | 133         | 34.8        |
+| logs       | traces     | 124         | 2.5         |
+| other      | metrics    | 124         | 26.1        |
+| other      | logs       | 123         | 25.9        |
+| traces     | logs       | 107         | 28.0        |
++------------+------------+-------------+-------------+

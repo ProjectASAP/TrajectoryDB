@@ -105,6 +105,44 @@ SELECT url_promql('curl "http://p:9090/api/v1/query_range?query=sum%28up%29&step
 +-----------+
 ```
 
+## Shell and argument UDFs
+
+```sql
+SELECT bash_heads(c) AS heads, kubectl_targets(c) AS targets, bash_namespaces(c) AS namespaces
+FROM (VALUES ('sleep 5; kubectl get pods -n shop | grep api && kubectl -n shop rollout restart deploy/api')) t(c)
+```
+```text
++---------------------------------------------+-----------------------------+--------------+
+| heads                                       | targets                     | namespaces   |
++---------------------------------------------+-----------------------------+--------------+
+| [sleep, kubectl get, grep, kubectl rollout] | [get pods, rollout restart] | [shop, shop] |
++---------------------------------------------+-----------------------------+--------------+
+```
+
+Heredoc bodies and `$(...)`, including inside double quotes, are handled. `chr(10)` is a newline.
+
+```sql
+SELECT bash_heads('cat <<END | kubectl apply -f -' || chr(10) || 'spec: {}' || chr(10) || 'END' || chr(10) || 'echo "$(kubectl get svc -A)"') AS heads
+```
+```text
++-----------------------------------------+
+| heads                                   |
++-----------------------------------------+
+| [cat, kubectl apply, echo, kubectl get] |
++-----------------------------------------+
+```
+
+```sql
+SELECT json_get('{"pod_name":"api-1","limit":40}', 'pod_name') AS pod, json_get('{"limit":40}', 'limit') AS lim, json_get('{"filter":null}', 'filter') AS f
+```
+```text
++-------+-----+---+
+| pod   | lim | f |
++-------+-----+---+
+| api-1 | 40  |   |
++-------+-----+---+
+```
+
 ## Views
 
 `promql`: every PromQL string sent, whether through `get_metrics` or as a `query=` parameter inside bash.
@@ -160,6 +198,29 @@ SELECT session_id, stage, step_id, metrics, linked, chain_id FROM promql_steps O
 | s2         | diagnosis  | 3       | []                    | false  | 1        |
 | s2         | diagnosis  | 4       | [up]                  | false  | 2        |
 +------------+------------+---------+-----------------------+--------+----------+
+```
+
+`telemetry_calls`: one row per tool call and modality, with the target namespace when known.
+
+```sql
+SELECT session_id, step_id, call_idx, stage, modality, namespace FROM telemetry_calls ORDER BY 1, 2, 3, 5
+```
+```text
++------------+---------+----------+------------+------------+-----------+
+| session_id | step_id | call_idx | stage      | modality   | namespace |
++------------+---------+----------+------------+------------+-----------+
+| s1         | 3       | 0        | diagnosis  | metrics    |           |
+| s1         | 3       | 1        | diagnosis  | alerts     |           |
+| s1         | 4       | 0        | diagnosis  | metrics    |           |
+| s1         | 5       | 0        | diagnosis  | k8s_state  | shop      |
+| s1         | 8       | 0        | mitigation | k8s_change | shop      |
+| s1         | 9       | 0        | mitigation | metrics    |           |
+| s1         | 10      | 0        | mitigation | metrics    |           |
+| s1         | 11      | 0        | mitigation | metrics    |           |
+| s2         | 3       | 0        | diagnosis  | metrics    |           |
+| s2         | 4       | 0        | diagnosis  | metrics    |           |
+| s2         | 4       | 1        | diagnosis  | logs       | shop      |
++------------+---------+----------+------------+------------+-----------+
 ```
 
 ## Walks

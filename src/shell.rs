@@ -96,7 +96,13 @@ pub fn kubectl_targets(s: &str) -> Vec<String> {
         let p = positionals(&c[1..]);
         let verb = *p.first()?;
         let raw = verb == "get" && c.iter().any(|x| x == "--raw");
-        Some(match (raw, p.get(1)) { (true, _) => "get --raw".into(), (_, Some(r)) => format!("{verb} {}", r.to_lowercase()), _ => verb.to_string() })
+        // these verbs take an object name (pod, deploy/x), not a resource type: report the verb alone
+        let named = matches!(verb, "logs" | "exec" | "port-forward" | "attach" | "cp" | "apply" | "debug");
+        Some(match (raw, p.get(1)) {
+            (true, _) => "get --raw".into(),
+            (_, Some(r)) if !named => format!("{verb} {}", r.to_lowercase()),
+            _ => verb.to_string(),
+        })
     }).collect()
 }
 
@@ -137,6 +143,7 @@ mod tests {
         let c = r#"sleep 20; kubectl get pods -n shop -o wide | grep -E 'a|b' && kubectl -n x rollout restart deploy/api 2>&1; for s in a b; do echo $s; done"#;
         assert_eq!(heads(c), ["sleep", "kubectl get", "grep", "kubectl rollout", "echo"]);
         assert_eq!(kubectl_targets(c), ["get pods", "rollout restart"]);
+        assert_eq!(kubectl_targets("kubectl logs api-1 -n x; kubectl exec -n x deploy/t -- ls"), ["logs", "exec"]);
         assert_eq!(namespaces(c), ["shop", "x"]);
         assert_eq!(heads("FOO=1 timeout 5 /usr/bin/curl -s \"$(kubectl get svc -A)\""), ["curl", "kubectl get"]);
         assert_eq!(kubectl_targets("kubectl get --raw /api/v1/x"), ["get --raw"]);

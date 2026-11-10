@@ -46,3 +46,30 @@ WITH s AS (
 )
 SELECT *, sum(CASE WHEN linked THEN 0 ELSE 1 END) OVER (PARTITION BY session_id, stage ORDER BY step_id) AS chain_id
 FROM k;
+
+-- telemetry_calls: one row per (tool call, modality) with the namespace(s) it targets when known.
+-- A bash call can carry several modalities (e.g. kubectl logs | grep, then curl a PromQL URL).
+-- k8s_change = mutating kubectl verbs, which the diagnosis prompt forbids.
+CREATE VIEW telemetry_calls AS
+WITH b AS (
+  SELECT session_id, step_id, call_idx, unnest(kubectl_targets(command)) AS tgt, bash_namespaces(command) AS ns
+  FROM tool_calls WHERE fn = 'bash'
+), c AS (
+  SELECT session_id, step_id, call_idx, 'metrics' AS modality, NULL AS ns FROM tool_calls WHERE fn = 'get_metrics'
+  UNION ALL SELECT session_id, step_id, call_idx, 'metrics', NULL FROM tool_calls WHERE fn = 'bash' AND cardinality(url_promql(command)) > 0
+  UNION ALL SELECT session_id, step_id, call_idx, 'logs', json_get(args, 'namespace') FROM tool_calls WHERE fn = 'fetch_pod_logs'
+  UNION ALL SELECT session_id, step_id, call_idx, 'traces', NULL FROM tool_calls WHERE fn IN ('get_traces', 'get_operations', 'get_dependency_graph')
+  UNION ALL SELECT session_id, step_id, call_idx, 'alerts', NULL FROM tool_calls WHERE fn = 'get_alerts'
+  UNION ALL SELECT session_id, step_id, call_idx, 'k8s_state', namespace FROM tool_calls
+    WHERE fn LIKE 'kubernetes_%' OR fn LIKE 'kubectl_%' OR fn = 'get_services'
+  UNION ALL SELECT session_id, step_id, call_idx,
+    CASE WHEN split_part(tgt, ' ', 1) = 'logs' THEN 'logs'
+         WHEN split_part(tgt, ' ', 1) IN ('apply', 'patch', 'delete', 'scale', 'edit', 'label', 'annotate', 'set', 'create',
+              'replace', 'cordon', 'drain', 'uncordon', 'taint') OR tgt IN ('rollout restart', 'rollout undo') THEN 'k8s_change'
+         WHEN split_part(tgt, ' ', 1) IN ('get', 'describe', 'top', 'events', 'rollout', 'api-resources', 'auth', 'wait') THEN 'k8s_state'
+         ELSE 'other' END,
+    ns[1]
+    FROM b
+)
+SELECT DISTINCT c.session_id, c.step_id, c.call_idx, st.stage, c.modality, c.ns AS namespace
+FROM c JOIN steps st USING (session_id, step_id);
