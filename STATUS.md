@@ -215,3 +215,11 @@ cd ../TrajectoryDB && cargo build --release
 - W8b: diagnosis switch runs (>=3 metric steps, each a different metric set than the last) in 26% of failed vs 10% of
   passed stages; same-metric refine runs 4% vs 0.6%.
 - Not built: MEASURES (computed per-match outputs), ALL ROWS PER MATCH as a table function; unnest the ids instead.
+
+## Cross-run alignment (expressivity item 1)
+- src/align.rs: seq_prefix, seq_edit_distance, seq_align over two list<utf8> (any alphabet: symbols, tool names, shapes).
+- X1a: diagnosis symbol sequences of runs of the same problem. Normalized edit distance: both_pass 0.27, both_fail 0.36,
+  one_pass 0.43. Passing runs are shorter (7.5 vs ~11 steps) but also closer after normalizing.
+- X1b: at the first divergence of a pass/fail pair, pass does K (k8s state) where fail does L (logs) in 26/62 pairs,
+  the reverse in 13. X1c: failing runs mostly have extra steps (->M 58, ->L 48).
+- Caveat: one symbol per step (priority). Use array_to_string(syms, '+') or tool fn names for a finer alphabet.
