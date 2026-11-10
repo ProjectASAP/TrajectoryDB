@@ -223,3 +223,16 @@ cd ../TrajectoryDB && cargo build --release
 - X1b: at the first divergence of a pass/fail pair, pass does K (k8s state) where fail does L (logs) in 26/62 pairs,
   the reverse in 13. X1c: failing runs mostly have extra steps (->M 58, ->L 48).
 - Caveat: one symbol per step (priority). Use array_to_string(syms, '+') or tool fn names for a finer alphabet.
+
+## M6: llm() semantic UDF (expressivity item 5)
+- src/llm.rs: llm(prompt) -> text via the Messages API (curl; no Rust SDK). JSONL cache keyed by (model, prompt), so
+  reruns and checked-in fixtures need no network. Defaults: claude-opus-5-5, effort low, fallbacks "default".
+  Guards: TDB_LLM_MAX_CALLS (200 distinct uncached prompts per command), TDB_LLM_DRY=1 counts without calling.
+- queries/llm/ (not run by bench): S1a blamed workload (extraction) -> first tool call touching it (walk);
+  S1b same blame across runs (cross-run x LLM); S2 "was this metric result used by the next step?" (judgment).
+  Samples: 40 / 37 / 50 calls. NOT RUN YET: no API credentials in this environment.
+- Planner finding: llm() as Immutable let DataFusion push `blamed <> 'none'` below the final-step join, which
+  would have called the model on all 3294 agent messages instead of 40. Marked Volatile, which keeps it in place.
+  A real system needs cost-aware placement of expensive UDF predicates, not a volatility hack.
+- ATIF here carries no reasoning text: only 2144/12171 agent steps have a message (mostly the final answers), so
+  step-intent labeling would have to work from tool calls.

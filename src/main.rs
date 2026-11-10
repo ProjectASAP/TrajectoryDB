@@ -11,6 +11,7 @@ mod promql;
 mod shell;
 mod seq;
 mod align;
+mod llm;
 
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
@@ -165,6 +166,7 @@ async fn ctx_mode(lazy: bool) -> Res<SessionContext> {
     promql::register(&c);
     shell::register(&c);
     align::register(&c);
+    llm::register(&c);
     c.register_udaf(seq::udaf());
     for (sql, _) in views() {
         c.sql(&sql).await?;
