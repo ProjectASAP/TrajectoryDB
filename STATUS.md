@@ -205,3 +205,13 @@ cd ../TrajectoryDB && cargo build --release
   seq_match's cost is the per-group Accumulator path, as for W7a.
 - Gotcha: DataFusion 54 `cardinality(list<list>)` = outer len x first inner len (assumes rectangular). Use
   array_length(flatten(m)) for #matched rows. W7a's `cardinality(m) > 0` is unaffected (0 iff empty).
+
+## seq_match v2: symbol sets + back-references (expressivity item 3)
+- Replaced the regex-over-chars engine with a backtracking matcher (src/seq.rs). Same results on W7a/W7b/examples.
+- sym may be list<utf8>: a row matches X if X is in its set. step_symbols gains `syms` (A/M/L/K + C=k8s change, T=traces)
+  and `metric_key` (sorted metric names).
+- Optional 5th arg `key`; pattern atoms `X[=Y]` / `X[!=Y]` compare the row's key with LAST(Y.key) within the match.
+- W8a: 37% of agent steps carry >1 modality; A..M..L by set hits 48/184 failed diagnosis stages vs 30 by priority.
+- W8b: diagnosis switch runs (>=3 metric steps, each a different metric set than the last) in 26% of failed vs 10% of
+  passed stages; same-metric refine runs 4% vs 0.6%.
+- Not built: MEASURES (computed per-match outputs), ALL ROWS PER MATCH as a table function; unnest the ids instead.

@@ -78,14 +78,19 @@ FROM c JOIN steps st USING (session_id, step_id);
 
 -- step_symbols: every agent step with its position in (session, stage) and one symbol by priority
 -- A(lerts) > M(etrics) > L(ogs) > K(8s state); NULL for other/no tools. Input for sequence-pattern walks (W7).
+-- syms: the full symbol set of the step (also C = k8s change, T = traces), for set-valued seq_match.
+-- metric_key: the step's sorted metric names joined by ',' (NULL without named metrics), a seq_match back-reference key.
 CREATE MATERIALIZED VIEW step_symbols ORDER BY (session_id, stage, step_id) AS
 WITH m AS (
   SELECT session_id, step_id,
     CASE WHEN bool_or(modality = 'alerts') THEN 'A' WHEN bool_or(modality = 'metrics') THEN 'M'
-         WHEN bool_or(modality = 'logs') THEN 'L' WHEN bool_or(modality = 'k8s_state') THEN 'K' END AS sym
+         WHEN bool_or(modality = 'logs') THEN 'L' WHEN bool_or(modality = 'k8s_state') THEN 'K' END AS sym,
+    array_sort(array_distinct(array_agg(CASE modality WHEN 'alerts' THEN 'A' WHEN 'metrics' THEN 'M' WHEN 'logs' THEN 'L'
+      WHEN 'k8s_state' THEN 'K' WHEN 'k8s_change' THEN 'C' WHEN 'traces' THEN 'T' END))) AS syms
   FROM telemetry_calls GROUP BY 1, 2
 )
 SELECT st.session_id, st.stage, st.step_id,
-  row_number() OVER (PARTITION BY st.session_id, st.stage ORDER BY st.step_id) AS pos, m.sym
-FROM steps st LEFT JOIN m USING (session_id, step_id)
+  row_number() OVER (PARTITION BY st.session_id, st.stage ORDER BY st.step_id) AS pos, m.sym, coalesce(m.syms, []) AS syms,
+  nullif(array_to_string(array_sort(p.metrics), ','), '') AS metric_key
+FROM steps st LEFT JOIN m USING (session_id, step_id) LEFT JOIN promql_steps p USING (session_id, step_id)
 WHERE st.source = 'agent';
