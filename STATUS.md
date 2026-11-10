@@ -101,3 +101,36 @@ cd ../TrajectoryDB && cargo build --release
 | W1 ancestry/replay | UNION of per-level joins, filter on `step_id <=` | verbose; every query repeats the target CTE |
 
 **Next (M5)**: walk operators. Candidates: `next_in(partition, order, predicate)` (replaces the T4b/W4c join dance), a sequence-pattern table function for patterns longer than 2, and a `replay(session, step)` table function. Each must reproduce the current goldens. Then add `tdb synth --x N` and time baseline vs. operator.
+
+## 2026-11-09 — Examples + items 5, 6, 8 (from the "what else" menu)
+
+**Examples (`EXAMPLES.md`)**
+- `tdb examples [--update]` ingests `examples/fixture` (two hand-written sessions) into `target/examples-db` and checks every sql/text block pair. It is self-contained and independent of `data/`. There are 19 examples now. Add one for every new feature.
+- `TDB_DB=<dir>` overrides the db directory.
+
+**(6) Normalization modes**
+- `promql_normalize(q, mode)` takes `exact | canonical | no_window | shape`. Each mode works by rewriting the AST and printing it again: matchers and `by` labels are sorted, windows and offsets blanked, label values replaced with `_`.
+- **T5d.** Within a session, hits that actually reached Prometheus grow from 46 (exact) to 50 (canonical), 180 (no_window) and 229 (shape) out of 2,738.
+  - These are the true result-cache opportunity, if the cache can serve a different window or label value.
+  - Global "hits" reach 49% at `shape`. Every session runs against a fresh cluster, so cross-session hits mean template reuse (what to pre-provision sketches for), not reusable answers.
+
+**(5) ASAP coverage + workload export**
+- `promql_asap_class(q)` mirrors ASAPQuery@c439bf4's planner pattern table, with unit cases copied from its tests.
+- `promql_asap_blocker(q)` gives the outermost reason an unsupported query misses.
+- `export/agent_promql.sql` writes `out/agent_promql.json`: one NDJSON row per PromQL query, with session, problem, stage, ts, query, asap_class, shape, metrics, ranges and result_kind.
+- ASAPQuery's input formats are a YAML `query_groups` with `repetition_delay_ms`, and ASAPPlanner's is a JSON `repeating_queries`. Both assume repeating queries. Agent PromQL is ad hoc, so there is no natural repetition interval; that is the open design question for feeding this workload in.
+- **T7a: only 13.6% of agent PromQL calls match an ASAP pattern** (4.6% approx, 7.8% exact, 1.2% binary). Raw selectors are 36%, discovery 16%, unsupported 34%.
+- **T7c: blockers among unsupported calls.**
+  - 43% are `sum/avg/topk(rate|increase(...))`, which ASAPQuery marks non-collapsable ("commented out in the Python reference").
+  - 26% are arithmetic with an unsupported arm, 17% comparison filters, 5% histogram_quantile and 4% subqueries.
+  - Adding collapsable `sum∘rate` alone would cover about 15% of all agent PromQL calls.
+
+**(8) Bash / kubectl / logs**
+- `src/shell.rs` adds `bash_heads`, `kubectl_targets`, `bash_namespaces` and `json_get`. They use a hand-rolled splitter that handles quotes, heredocs, and `$( )` including inside double quotes.
+- **W2c** reproduces the viewer's bash pattern table: pattern, attempts and problems match exactly, and occurrences are within 0.03%. `oracle/check.sh` checks it.
+- The `telemetry_calls` view tags each call with one or more modalities (metrics/logs/traces/alerts/k8s_state/k8s_change/other) and a namespace.
+- T6a kubectl targets, T6b first mutation per stage, W6a modality transitions, W6b metric→same-namespace logs.
+- **T6b: zero mutating kubectl calls in diagnosis** across all 601 sessions, so the "do not mutate" constraint is never violated. In mitigation, 269 of 274 passing sessions mutate, against 183 of 251 failing ones.
+- W6b: after a PromQL step that filters on `namespace="X"`, logs for namespace X follow within 3 steps 54.5% of the time in diagnosis.
+
+**Process incident (no damage).** A shell heredoc used to edit `EXAMPLES.md` was cut short by an `EOF` inside the example text. The remainder ran as shell and executed one read-only `kubectl get svc -A` against the local kube context (192.168.49.2), which timed out and was killed. No files changed. Markdown edits now go through the Edit tool, not shell heredocs.
