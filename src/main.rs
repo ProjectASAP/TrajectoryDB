@@ -2,6 +2,8 @@
 //!   tdb ingest <trace-root>     ATIF trajectories (+ run-*/results.csv) -> db/*.parquet
 //!   tdb sql "<query>"           run SQL over db/
 //!   tdb bench [--update]        run queries/*.sql, diff against .golden
+//!   tdb examples [--update]     ingest examples/fixture, check every sql/text pair in EXAMPLES.md
+//! TDB_DB=<dir> overrides the db directory (default ./db).
 
 mod promql;
 
@@ -11,7 +13,7 @@ use serde_json::{json, Value};
 use std::{env, fs, io::Write, path::Path, time::Instant};
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
-const DB: &str = "db";
+fn db() -> String { env::var("TDB_DB").unwrap_or_else(|_| "db".into()) }
 
 /// table name -> (create-from-staging SQL column list, sort keys)
 const TABLES: &[(&str, &str, &[&str])] = &[
@@ -32,7 +34,8 @@ async fn main() -> Res<()> {
             Ok(())
         }
         Some("bench") => bench(a.iter().any(|x| x == "--update")).await,
-        _ => Err("usage: tdb ingest <root> | sql <q> | bench [--update]".into()),
+        Some("examples") => examples(a.iter().any(|x| x == "--update")).await,
+        _ => Err("usage: tdb ingest <root> | sql <q> | bench [--update] | examples [--update]".into()),
     }
 }
 
@@ -52,7 +55,7 @@ fn files(dir: &Path, name: &str, out: &mut Vec<std::path::PathBuf>) -> Res<()> {
 /// Flatten ATIF to per-table NDJSON staging, then let DataFusion type, sort and write Parquet.
 async fn ingest(root: &str) -> Res<()> {
     let root = Path::new(root);
-    let stage = Path::new(DB).join("_staging");
+    let stage = Path::new(&db()).join("_staging");
     fs::create_dir_all(&stage)?;
     let mut w: Vec<_> = TABLES.iter().map(|t| fs::File::create(stage.join(format!("{}.json", t.0))).map(std::io::BufWriter::new)).collect::<Result<_, _>>()?;
     let mut paths = vec![];
@@ -107,7 +110,7 @@ async fn ingest(root: &str) -> Res<()> {
         let src = if *name == "sessions" {
             "SELECT s.*, r.diagnosis_accuracy, r.diagnosis_passed, r.mitigation_passed FROM stg_sessions s LEFT JOIN results r ON s.session_id = r.session_id".to_string()
         } else { format!("SELECT * FROM stg_{name}") };
-        let out = Path::new(DB).join(format!("{name}.parquet"));
+        let out = Path::new(&db()).join(format!("{name}.parquet"));
         let n = c.sql(&format!("COPY ({src} ORDER BY {}) TO '{}' STORED AS PARQUET", keys.join(", "), out.display())).await?.collect().await?;
         println!("{name}: {} rows", pretty_format_batches(&n)?.to_string().lines().nth(3).unwrap_or("?").trim_matches(|c| c == '|' || c == ' '));
     }
@@ -119,7 +122,7 @@ async fn ctx() -> Res<SessionContext> {
     let c = SessionContext::new();
     for (name, _, keys) in TABLES {
         let order = vec![keys.iter().map(|k| col(*k).sort(true, false)).collect()];
-        let p = Path::new(DB).join(format!("{name}.parquet"));
+        let p = Path::new(&db()).join(format!("{name}.parquet"));
         c.register_parquet(*name, p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
     }
     promql::register(&c);
@@ -145,4 +148,29 @@ async fn bench(update: bool) -> Res<()> {
         println!("{verdict:7} {ms:8.1} ms  {}", q.file_name().unwrap().to_string_lossy());
     }
     if fail > 0 { Err(format!("{fail} queries failed").into()) } else { Ok(()) }
+}
+
+/// EXAMPLES.md: every ```sql block followed by a ```text block is run against examples/fixture and compared.
+async fn examples(update: bool) -> Res<()> {
+    // ponytail: process-wide env var; fine for a single-threaded CLI command
+    unsafe { env::set_var("TDB_DB", "target/examples-db") };
+    ingest("examples/fixture").await?;
+    let c = ctx().await?;
+    let md = fs::read_to_string("EXAMPLES.md")?;
+    let (mut out, mut sql, mut fail, mut n) = (String::new(), None::<String>, 0, 0);
+    let mut lines = md.lines();
+    while let Some(l) = lines.next() {
+        out += l; out += "\n";
+        if l != "```sql" && l != "```text" { continue }
+        let body: Vec<&str> = lines.by_ref().take_while(|x| *x != "```").collect();
+        if l == "```sql" { sql = Some(body.join("\n")); out += &body.iter().map(|x| format!("{x}\n")).collect::<String>(); out += "```\n"; continue }
+        let q = sql.take().ok_or("```text block without preceding ```sql")?;
+        let got = match c.sql(&q).await { Ok(df) => match df.collect().await { Ok(b) => pretty_format_batches(&b)?.to_string(), Err(e) => format!("ERROR: {e}") }, Err(e) => format!("ERROR: {e}") };
+        n += 1;
+        if got != body.join("\n") { fail += 1; if !update { println!("FAIL:\n{q}\n--- expected\n{}\n--- got\n{got}\n", body.join("\n")) } }
+        out += &got; out += "\n```\n";
+    }
+    if update { fs::write("EXAMPLES.md", out)?; println!("{n} examples, {fail} updated"); return Ok(()) }
+    println!("{n} examples, {fail} failed");
+    if fail > 0 { Err(format!("{fail} examples failed").into()) } else { Ok(()) }
 }

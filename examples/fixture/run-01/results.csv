@@ -1,0 +1,2 @@
+problem_id,session_id,max_steps,diagnosis_accuracy,diagnosis_passed,mitigation_passed
+p1,s1,100,100.0,True,False

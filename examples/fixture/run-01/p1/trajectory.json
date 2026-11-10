@@ -1,0 +1,308 @@
+{
+ "schema_version": "ATIF-v1.7",
+ "session_id": "s1",
+ "agent": {
+  "name": "holmesgpt",
+  "model_name": "m"
+ },
+ "extra": {
+  "sregym": {
+   "problem_id": "p1",
+   "application": "Shop"
+  }
+ },
+ "steps": [
+  {
+   "step_id": 1,
+   "timestamp": "2026-01-01T00:00:01Z",
+   "source": "system",
+   "message": "sys",
+   "extra": {
+    "stage": "diagnosis"
+   }
+  },
+  {
+   "step_id": 2,
+   "timestamp": "2026-01-01T00:00:02Z",
+   "source": "user",
+   "message": "diagnose",
+   "extra": {
+    "stage": "diagnosis"
+   }
+  },
+  {
+   "step_id": 3,
+   "timestamp": "2026-01-01T00:00:03Z",
+   "source": "agent",
+   "message": "",
+   "extra": {
+    "stage": "diagnosis"
+   },
+   "metrics": {
+    "prompt_tokens": 100,
+    "cached_tokens": 0,
+    "completion_tokens": 10
+   },
+   "tool_calls": [
+    {
+     "tool_call_id": "c1",
+     "function_name": "get_metrics",
+     "arguments": {
+      "query": "rate(http_requests_total{job=\"api\"}[5m])"
+     }
+    },
+    {
+     "tool_call_id": "c2",
+     "function_name": "get_alerts",
+     "arguments": {}
+    }
+   ],
+   "observation": {
+    "results": [
+     {
+      "source_call_id": "c1",
+      "content": "{'resultType': 'vector', 'result': [{'metric': {'job': 'api'}, 'value': [1.0, '3']}]}",
+      "extra": {
+       "status": "success"
+      }
+     },
+     {
+      "source_call_id": "c2",
+      "content": "No firing alerts",
+      "extra": {
+       "status": "success"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step_id": 4,
+   "timestamp": "2026-01-01T00:00:04Z",
+   "source": "agent",
+   "message": "",
+   "extra": {
+    "stage": "diagnosis"
+   },
+   "metrics": {
+    "prompt_tokens": 200,
+    "cached_tokens": 100,
+    "completion_tokens": 10
+   },
+   "tool_calls": [
+    {
+     "tool_call_id": "c3",
+     "function_name": "get_metrics",
+     "arguments": {
+      "query": "rate(http_requests_total{job=\"api\"}[1m])"
+     }
+    }
+   ],
+   "observation": {
+    "results": [
+     {
+      "source_call_id": "c3",
+      "content": "{'resultType': 'vector', 'result': []}",
+      "extra": {
+       "status": "success"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step_id": 5,
+   "timestamp": "2026-01-01T00:00:05Z",
+   "source": "agent",
+   "message": "",
+   "extra": {
+    "stage": "diagnosis"
+   },
+   "metrics": {
+    "prompt_tokens": 300,
+    "cached_tokens": 200,
+    "completion_tokens": 10
+   },
+   "tool_calls": [
+    {
+     "tool_call_id": "c4",
+     "function_name": "bash",
+     "arguments": {
+      "command": "kubectl get pods -n shop | grep api"
+     }
+    }
+   ],
+   "observation": {
+    "results": [
+     {
+      "source_call_id": "c4",
+      "content": "api-1 0/1 CrashLoopBackOff",
+      "extra": {
+       "status": "success"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step_id": 6,
+   "timestamp": "2026-01-01T00:00:06Z",
+   "source": "agent",
+   "message": "root cause: api crashloop",
+   "extra": {
+    "stage": "diagnosis"
+   },
+   "metrics": {
+    "prompt_tokens": 400,
+    "cached_tokens": 300,
+    "completion_tokens": 10
+   }
+  },
+  {
+   "step_id": 7,
+   "timestamp": "2026-01-01T00:00:07Z",
+   "source": "user",
+   "message": "mitigate",
+   "extra": {
+    "stage": "mitigation"
+   }
+  },
+  {
+   "step_id": 8,
+   "timestamp": "2026-01-01T00:00:08Z",
+   "source": "agent",
+   "message": "",
+   "extra": {
+    "stage": "mitigation"
+   },
+   "metrics": {
+    "prompt_tokens": 500,
+    "cached_tokens": 400,
+    "completion_tokens": 10
+   },
+   "tool_calls": [
+    {
+     "tool_call_id": "c5",
+     "function_name": "bash",
+     "arguments": {
+      "command": "kubectl rollout restart deploy/api -n shop"
+     }
+    }
+   ],
+   "observation": {
+    "results": [
+     {
+      "source_call_id": "c5",
+      "content": "restarted",
+      "extra": {
+       "status": "success"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step_id": 9,
+   "timestamp": "2026-01-01T00:00:09Z",
+   "source": "agent",
+   "message": "",
+   "extra": {
+    "stage": "mitigation"
+   },
+   "metrics": {
+    "prompt_tokens": 600,
+    "cached_tokens": 500,
+    "completion_tokens": 10
+   },
+   "tool_calls": [
+    {
+     "tool_call_id": "c6",
+     "function_name": "get_metrics",
+     "arguments": {
+      "query": "rate(http_requests_total{job=\"api\"}[5m])"
+     }
+    }
+   ],
+   "observation": {
+    "results": [
+     {
+      "source_call_id": "c6",
+      "content": "{'resultType': 'vector', 'result': [{'metric': {'job': 'api'}, 'value': [1.0, '3']}]}",
+      "extra": {
+       "status": "success"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step_id": 10,
+   "timestamp": "2026-01-01T00:00:10Z",
+   "source": "agent",
+   "message": "",
+   "extra": {
+    "stage": "mitigation"
+   },
+   "metrics": {
+    "prompt_tokens": 700,
+    "cached_tokens": 600,
+    "completion_tokens": 10
+   },
+   "tool_calls": [
+    {
+     "tool_call_id": "c7",
+     "function_name": "get_metrics",
+     "arguments": {
+      "query": "rate(http_requests_total{job=\"api\"}[5m])"
+     }
+    }
+   ],
+   "observation": {
+    "results": [
+     {
+      "source_call_id": "c7",
+      "content": "Refusing to run this tool call because it has already been called during this session with the exact same parameters.",
+      "extra": {
+       "status": "success"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "step_id": 11,
+   "timestamp": "2026-01-01T00:00:11Z",
+   "source": "agent",
+   "message": "",
+   "extra": {
+    "stage": "mitigation"
+   },
+   "metrics": {
+    "prompt_tokens": 800,
+    "cached_tokens": 700,
+    "completion_tokens": 10
+   },
+   "tool_calls": [
+    {
+     "tool_call_id": "c8",
+     "function_name": "bash",
+     "arguments": {
+      "command": "curl -s 'http://prom:9090/api/v1/query?query=up%7Bjob%3D%22api%22%7D'"
+     }
+    }
+   ],
+   "observation": {
+    "results": [
+     {
+      "source_call_id": "c8",
+      "content": "{\"status\":\"success\"}",
+      "extra": {
+       "status": "success"
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "final_metrics": {}
+}
