@@ -82,7 +82,10 @@ S1 matters most for the ASAP angle ("which PromQL actually mattered"). Add it on
 | M2 ✅ | PromQL UDFs | T2, T3, and T5 (normalized version) pass; parse coverage reported (% of get_metrics parsed) |
 | M3 ✅ | Linear walks (SQL baseline) | W2 matches the viewer oracle; T4, W3, and W4 pass |
 | M4 ✅ | Tree and cross walks | W1 and W5 pass |
-| M5 | Walk operators | `seq_match`/`walk` give the same output as the baselines; timings at 1× and the synthetic scales |
+| M5 ✅ | Walk operators | `seq_match` gives the same output as the baseline (W7a); timings at 1×, 10×, and 50× (STATUS). `next_in`/`replay` were dropped: `LEAD` over step views covers "next X" |
+| M5b ✅ | ASAP workload + caching | `promql_asap_class`/`promql_asap_blocker`, T7, export/agent_promql.sql; `promql_normalize` modes + T5d |
+| M5c ✅ | Other tools | bash/kubectl/log UDFs, `telemetry_calls`, T6/W6; W2c matches the viewer's bash table |
+| M7 | Eager materialization (C1) | `step_symbols`/`telemetry_calls` built at ingest; `scale.sh` rerun |
 | M6 | Semantic (optional) | S1 on a hand-labeled subset of about 50 |
 
 **MVP = M1–M3**: every PromQL query HolmesGPT sent, dissected, with linear walks around those calls, from one engine, and `tdb bench` green.
