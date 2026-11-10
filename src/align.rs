@@ -2,7 +2,7 @@
 //!   seq_prefix(a, b)        -> int64        length of the common prefix (index of first divergence)
 //!   seq_edit_distance(a, b) -> int64        Levenshtein distance over elements
 //!   seq_align(a, b)         -> list<utf8>   one optimal alignment (ties: same, delete, insert, substitute): "x" (same), "x>y" (a has x, b has y),
-//!                                           "x>-" (only in a), "->y" (only in b)
+//!                                           "x>" (only in a), ">y" (only in b)
 //! NULL list -> NULL; NULL elements compare as "".
 // ponytail: O(len_a * len_b) DP per pair; fine for trajectories of ~100 steps.
 
@@ -34,9 +34,9 @@ fn align(a: &[String], b: &[String]) -> Vec<String> {
         if diag && a[i - 1] == b[j - 1] {
             ops.push(a[i - 1].clone()); i -= 1; j -= 1;
         } else if i > 0 && d[i][j] == d[i - 1][j] + 1 {
-            ops.push(format!("{}>-", a[i - 1])); i -= 1;
+            ops.push(format!("{}>", a[i - 1])); i -= 1;
         } else if j > 0 && d[i][j] == d[i][j - 1] + 1 {
-            ops.push(format!("->{}", b[j - 1])); j -= 1;
+            ops.push(format!(">{}", b[j - 1])); j -= 1;
         } else {
             ops.push(format!("{}>{}", a[i - 1], b[j - 1])); i -= 1; j -= 1;
         }
@@ -106,10 +106,10 @@ mod tests {
     fn v(s: &str) -> Vec<String> { s.split(' ').filter(|x| !x.is_empty()).map(String::from).collect() }
     #[test]
     fn aligns() {
-        assert_eq!(align(&v("A M M L"), &v("A M K L L")), ["A", "M", "M>K", "->L", "L"]);
+        assert_eq!(align(&v("A M M L"), &v("A M K L L")), ["A", "M", "M>K", ">L", "L"]);
         assert_eq!(distance(&v("A M M L"), &v("A M K L L")), 2);
         assert_eq!(prefix(&v("A M M L"), &v("A M K L L")), 2);
-        assert_eq!(align(&v("A B"), &v("")), ["A>-", "B>-"]);
+        assert_eq!(align(&v("A B"), &v("")), ["A>", "B>"]);
         assert_eq!(distance(&v(""), &v("")), 0);
     }
 }

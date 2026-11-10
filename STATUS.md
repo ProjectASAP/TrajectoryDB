@@ -236,3 +236,11 @@ cd ../TrajectoryDB && cargo build --release
   A real system needs cost-aware placement of expensive UDF predicates, not a volatility hack.
 - ATIF here carries no reasoning text: only 2144/12171 agent steps have a message (mostly the final answers), so
   step-intent labeling would have to work from tool calls.
+
+## EXAMPLES.md is now a user guide
+- Organized by question (data model, tool calls, walks, sequence patterns, comparing runs, LLM, physical design),
+  each section pointing at its corpus queries. 26 examples (was 20): + normalize-key counts, symbol sets,
+  back-references (VALUES and fixture), alignment over symbols and over tool names, llm() via a checked-in cache.
+- `tdb examples` pins TDB_LLM_CACHE=examples/llm_cache.jsonl (hand-written responses) and TDB_LLM_MAX_CALLS=0.
+- Correction: seq_align's old notation was ambiguous with the '-' no-symbol placeholder ("->M" was both "insert M"
+  and "'-' replaced by M"). Now deletion = "x>", insertion = ">y". X1c: >M 57, >L 45 (previously reported 58/48).

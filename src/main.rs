@@ -203,7 +203,13 @@ async fn bench(update: bool) -> Res<()> {
 /// EXAMPLES.md: every ```sql block followed by a ```text block is run against examples/fixture and compared.
 async fn examples(update: bool) -> Res<()> {
     // ponytail: process-wide env var; fine for a single-threaded CLI command
-    unsafe { env::set_var("TDB_DB", "target/examples-db") };
+    unsafe {
+        env::set_var("TDB_DB", "target/examples-db");
+        // llm() examples read hand-written responses from a checked-in cache and never call the API
+        env::set_var("TDB_LLM_CACHE", "examples/llm_cache.jsonl");
+        env::set_var("TDB_LLM_MODEL", "claude-opus-5-5");
+        env::set_var("TDB_LLM_MAX_CALLS", "0");
+    }
     ingest("examples/fixture").await?;
     let c = ctx().await?;
     let md = fs::read_to_string("EXAMPLES.md")?;
