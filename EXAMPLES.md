@@ -314,3 +314,23 @@ SELECT unnest(array_intersect(a.m, b.m)) AS shared_metric FROM
 | up            |
 +---------------+
 ```
+
+## Row-pattern matching (`seq_match`)
+
+`step_symbols` gives each agent step a position within its (session, stage) and one symbol: A(lerts) > M(etrics) > L(ogs) > K(8s state), else NULL. `seq_match(ord, id, sym, pattern)` is an aggregate that returns the ids of every match. Matches are leftmost and non-overlapping. In the pattern, `.` matches any row, including a NULL symbol.
+
+```sql
+SELECT session_id, stage, array_agg(coalesce(sym, '-') ORDER BY pos) AS syms,
+  seq_match(pos, step_id, sym, 'A M') AS a_then_m,
+  seq_match(pos, step_id, sym, 'M .{0,1} K') AS m_gap_k
+FROM step_symbols GROUP BY 1, 2 ORDER BY 1, 2
+```
+```text
++------------+------------+--------------+----------+----------+
+| session_id | stage      | syms         | a_then_m | m_gap_k  |
++------------+------------+--------------+----------+----------+
+| s1         | diagnosis  | [A, M, K, -] | [[3, 4]] | [[4, 5]] |
+| s1         | mitigation | [-, M, M, M] | []       | []       |
+| s2         | diagnosis  | [M, M]       | []       | []       |
++------------+------------+--------------+----------+----------+
+```

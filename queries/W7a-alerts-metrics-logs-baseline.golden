@@ -1,0 +1,10 @@
++------------+--------+----------+--------------+
+| stage      | passed | sessions | with_pattern |
++------------+--------+----------+--------------+
+| diagnosis  | false  | 184      | 30           |
+| diagnosis  | true   | 341      | 37           |
+| diagnosis  |        | 76       | 10           |
+| mitigation | false  | 251      | 6            |
+| mitigation | true   | 274      | 10           |
+| mitigation |        | 76       | 0            |
++------------+--------+----------+--------------+

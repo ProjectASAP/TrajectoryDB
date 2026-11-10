@@ -7,6 +7,7 @@
 
 mod promql;
 mod shell;
+mod seq;
 
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
@@ -128,7 +129,10 @@ async fn ctx() -> Res<SessionContext> {
     }
     promql::register(&c);
     shell::register(&c);
-    for v in include_str!("views.sql").split(';').filter(|v| v.lines().any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"))) {
+    c.register_udaf(seq::udaf());
+    // strip whole-line comments first, then split statements on ';' (never put ';' inside a string)
+    let views: String = include_str!("views.sql").lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n");
+    for v in views.split(';').filter(|v| !v.trim().is_empty()) {
         c.sql(v).await?;
     }
     Ok(c)

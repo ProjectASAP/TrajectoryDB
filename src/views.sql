@@ -1,4 +1,4 @@
--- Views registered on every tdb context. Statements are split on semicolons, so never put one inside a string or comment.
+-- Views registered on every tdb context. Whole-line comments are stripped, then statements are split on semicolons.
 
 -- promql: every PromQL string the agent sent: native get_metrics + query= params inside bash (curl to /api/v1/query*).
 CREATE VIEW promql AS
@@ -73,3 +73,17 @@ WITH b AS (
 )
 SELECT DISTINCT c.session_id, c.step_id, c.call_idx, st.stage, c.modality, c.ns AS namespace
 FROM c JOIN steps st USING (session_id, step_id);
+
+-- step_symbols: every agent step with its position in (session, stage) and one symbol by priority
+-- A(lerts) > M(etrics) > L(ogs) > K(8s state); NULL for other/no tools. Input for sequence-pattern walks (W7).
+CREATE VIEW step_symbols AS
+WITH m AS (
+  SELECT session_id, step_id,
+    CASE WHEN bool_or(modality = 'alerts') THEN 'A' WHEN bool_or(modality = 'metrics') THEN 'M'
+         WHEN bool_or(modality = 'logs') THEN 'L' WHEN bool_or(modality = 'k8s_state') THEN 'K' END AS sym
+  FROM telemetry_calls GROUP BY 1, 2
+)
+SELECT st.session_id, st.stage, st.step_id,
+  row_number() OVER (PARTITION BY st.session_id, st.stage ORDER BY st.step_id) AS pos, m.sym
+FROM steps st LEFT JOIN m USING (session_id, step_id)
+WHERE st.source = 'agent';
