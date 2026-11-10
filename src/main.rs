@@ -27,14 +27,22 @@ const TABLES: &[(&str, &str, &[&str])] = &[
     ("observations", "session_id VARCHAR, step_id BIGINT, obs_idx BIGINT, call_id VARCHAR, status VARCHAR, error VARCHAR, return_code BIGINT, elapsed_s DOUBLE, content VARCHAR", &["session_id", "step_id", "obs_idx"]),
 ];
 
-/// Derived views that ingest/synth also materialize to Parquet (eager); ctx() prefers the Parquet copy
-/// unless TDB_LAZY is set. Listed in dependency order with their sort keys.
-const DERIVED: &[(&str, &[&str])] = &[
-    ("metric_results", &["session_id", "step_id", "call_idx"]),
-    ("promql_steps", &["session_id", "stage", "step_id"]),
-    ("telemetry_calls", &["session_id", "step_id", "call_idx"]),
-    ("step_symbols", &["session_id", "stage", "step_id"]),
-];
+/// A views.sql statement as plain DataFusion SQL, plus (name, sort keys) if it was declared
+/// `CREATE MATERIALIZED VIEW name ORDER BY (k, ...) AS q` (DataFusion has no such statement; we rewrite it).
+type ViewDef = (String, Option<(String, Vec<String>)>);
+
+fn views() -> Vec<ViewDef> {
+    let mv = regex::Regex::new(r"(?is)^\s*CREATE\s+MATERIALIZED\s+VIEW\s+(\w+)\s+ORDER\s+BY\s*\(([^)]*)\)\s+AS\s+(.*)$").unwrap();
+    // strip whole-line comments first, then split statements on ';' (never put ';' inside a string)
+    let src: String = include_str!("views.sql").lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n");
+    src.split(';').filter(|v| !v.trim().is_empty()).map(|v| match mv.captures(v) {
+        Some(m) => (format!("CREATE VIEW {} AS {}", &m[1], &m[3]),
+                    Some((m[1].to_string(), m[2].split(',').map(|k| k.trim().to_string()).collect()))),
+        None => (v.to_string(), None),
+    }).collect()
+}
+
+fn materialized() -> Vec<(String, Vec<String>)> { views().into_iter().filter_map(|v| v.1).collect() }
 
 #[tokio::main]
 async fn main() -> Res<()> {
@@ -132,10 +140,10 @@ async fn ingest(root: &str) -> Res<()> {
     materialize().await
 }
 
-/// Write each DERIVED view, evaluated lazily over the base tables, to <db>/<view>.parquet.
+/// Write each materialized view, evaluated lazily over the base tables, to <db>/<view>.parquet.
 async fn materialize() -> Res<()> {
     let c = ctx_mode(true).await?;
-    for (name, keys) in DERIVED {
+    for (name, keys) in materialized() {
         let t = Instant::now();
         let out = Path::new(&db()).join(format!("{name}.parquet"));
         c.sql(&format!("COPY (SELECT * FROM {name} ORDER BY {}) TO '{}' STORED AS PARQUET", keys.join(", "), out.display())).await?.collect().await?;
@@ -156,17 +164,16 @@ async fn ctx_mode(lazy: bool) -> Res<SessionContext> {
     promql::register(&c);
     shell::register(&c);
     c.register_udaf(seq::udaf());
-    // strip whole-line comments first, then split statements on ';' (never put ';' inside a string)
-    let views: String = include_str!("views.sql").lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n");
-    for v in views.split(';').filter(|v| !v.trim().is_empty()) {
-        c.sql(v).await?;
+    for (sql, _) in views() {
+        c.sql(&sql).await?;
     }
-    for (name, keys) in DERIVED.iter().filter(|_| !lazy) {
+    // ponytail: no staleness tracking; a missing file falls back to the lazy view, ingest/synth rebuild all
+    for (name, keys) in materialized().into_iter().filter(|_| !lazy) {
         let p = Path::new(&db()).join(format!("{name}.parquet"));
         if !p.exists() { continue }
-        c.deregister_table(*name)?;
-        let order = vec![keys.iter().map(|k| col(*k).sort(true, false)).collect()];
-        c.register_parquet(*name, p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
+        c.deregister_table(name.as_str())?;
+        let order = vec![keys.iter().map(|k| col(k.as_str()).sort(true, false)).collect()];
+        c.register_parquet(name.as_str(), p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
     }
     Ok(c)
 }

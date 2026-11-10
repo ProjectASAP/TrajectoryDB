@@ -1,4 +1,6 @@
 -- Views registered on every tdb context. Whole-line comments are stripped, then statements are split on semicolons.
+-- CREATE MATERIALIZED VIEW v ORDER BY (k, ...) AS q: ingest/synth also write q to <db>/v.parquet sorted by k,
+-- and contexts read that copy (declared sort order) unless TDB_LAZY=1. Declare in dependency order.
 
 -- promql: every PromQL string the agent sent: native get_metrics + query= params inside bash (curl to /api/v1/query*).
 CREATE VIEW promql AS
@@ -8,7 +10,7 @@ SELECT session_id, step_id, call_idx, call_id, 'bash_url' AS via, unnest(url_pro
 FROM tool_calls WHERE fn = 'bash' AND command LIKE '%query=%';
 
 -- metric_results: each get_metrics call with its result classified from content (observations.status is unreliable).
-CREATE VIEW metric_results AS
+CREATE MATERIALIZED VIEW metric_results ORDER BY (session_id, step_id, call_idx) AS
 SELECT t.session_id, t.step_id, t.call_idx, t.call_id, st.stage, t.query,
   CASE
     WHEN o.content LIKE 'Refusing to run this tool call because it has already been called%' THEN 'refused_duplicate'
@@ -27,7 +29,7 @@ WHERE t.fn = 'get_metrics';
 -- promql_steps: one row per agent step that issued get_metrics, with the union of what its queries touch.
 -- linked = shares a metric name with the previous PromQL step of the same session+stage (other tools may sit between).
 -- chain_id numbers maximal runs of linked steps (gaps-and-islands). Discovery-only steps (no metric name) never link.
-CREATE VIEW promql_steps AS
+CREATE MATERIALIZED VIEW promql_steps ORDER BY (session_id, stage, step_id) AS
 WITH s AS (
   SELECT session_id, stage, step_id, count(*) AS calls,
     array_distinct(flatten(array_agg(promql_metrics(query))  FILTER (WHERE promql_error(query) IS NULL))) AS metrics,
@@ -50,7 +52,7 @@ FROM k;
 -- telemetry_calls: one row per (tool call, modality) with the namespace(s) it targets when known.
 -- A bash call can carry several modalities (e.g. kubectl logs | grep, then curl a PromQL URL).
 -- k8s_change = mutating kubectl verbs, which the diagnosis prompt forbids.
-CREATE VIEW telemetry_calls AS
+CREATE MATERIALIZED VIEW telemetry_calls ORDER BY (session_id, step_id, call_idx) AS
 WITH b AS (
   SELECT session_id, step_id, call_idx, unnest(kubectl_targets(command)) AS tgt, bash_namespaces(command) AS ns
   FROM tool_calls WHERE fn = 'bash'
@@ -76,7 +78,7 @@ FROM c JOIN steps st USING (session_id, step_id);
 
 -- step_symbols: every agent step with its position in (session, stage) and one symbol by priority
 -- A(lerts) > M(etrics) > L(ogs) > K(8s state); NULL for other/no tools. Input for sequence-pattern walks (W7).
-CREATE VIEW step_symbols AS
+CREATE MATERIALIZED VIEW step_symbols ORDER BY (session_id, stage, step_id) AS
 WITH m AS (
   SELECT session_id, step_id,
     CASE WHEN bool_or(modality = 'alerts') THEN 'A' WHEN bool_or(modality = 'metrics') THEN 'M'

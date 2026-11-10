@@ -188,3 +188,9 @@ cd ../TrajectoryDB && cargo build --release
 2. A `GroupsAccumulator` for `seq_match`, then re-time.
 3. Decide what else to materialize (`promql` view? `promql_*` UDF results as columns?) and measure the ingest/storage cost against the query win.
 - Caveat on `synth`: at 50× the db is only 28 MB, against 7.5 MB at 1×. Exact replicas compress almost perfectly in Parquet (dictionary encoding), so scan and IO costs at N× are underestimated. Timings mostly reflect CPU on N× rows. Do not use synth for storage claims (C4).
+
+## M7b: materialization is declared, not hardcoded
+- views.sql now says `CREATE MATERIALIZED VIEW v ORDER BY (k, ...) AS q` (ClickHouse-style sort key). tdb rewrites it to
+  `CREATE VIEW` for DataFusion and materializes exactly the declared set at ingest/synth; the `DERIVED` list in main.rs is gone.
+- Still no runtime `CREATE MATERIALIZED VIEW` via `tdb sql`, no `REFRESH`, no staleness check (missing file -> lazy view).
+- bench 0 non-PASS eager and lazy; 20 examples pass; oracle/check.sh passes.
