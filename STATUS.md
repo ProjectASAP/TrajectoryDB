@@ -187,3 +187,4 @@ cd ../TrajectoryDB && cargo build --release
 1. A W7b query with an unbounded pattern (e.g. a run of ≥3 consecutive metric steps that ends in logs). Compare `seq_match` with a recursive-CTE or gaps-and-islands baseline.
 2. A `GroupsAccumulator` for `seq_match`, then re-time.
 3. Decide what else to materialize (`promql` view? `promql_*` UDF results as columns?) and measure the ingest/storage cost against the query win.
+- Caveat on `synth`: at 50× the db is only 28 MB, against 7.5 MB at 1×. Exact replicas compress almost perfectly in Parquet (dictionary encoding), so scan and IO costs at N× are underestimated. Timings mostly reflect CPU on N× rows. Do not use synth for storage claims (C4).
