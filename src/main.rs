@@ -5,6 +5,7 @@
 //!   tdb examples [--update]     ingest examples/fixture, check every sql/text pair in EXAMPLES.md
 //!   tdb synth <N> <dir>         replicate every session N times (new session_ids) into <dir>, for timing
 //! TDB_DB=<dir> overrides the db directory (default ./db).
+//! TDB_LAZY=1 ignores materialized derived tables and evaluates their views on the fly (eager vs lazy, paper C1).
 
 mod promql;
 mod shell;
@@ -24,6 +25,15 @@ const TABLES: &[(&str, &str, &[&str])] = &[
     ("steps", "session_id VARCHAR, step_id BIGINT, stage VARCHAR, source VARCHAR, ts VARCHAR, model VARCHAR, prompt_tok BIGINT, completion_tok BIGINT, cached_tok BIGINT, cache_write_tok BIGINT, duration_s DOUBLE, status VARCHAR, message VARCHAR", &["session_id", "step_id"]),
     ("tool_calls", "session_id VARCHAR, step_id BIGINT, call_idx BIGINT, call_id VARCHAR, fn VARCHAR, args VARCHAR, query VARCHAR, command VARCHAR, kind VARCHAR, namespace VARCHAR", &["session_id", "step_id", "call_idx"]),
     ("observations", "session_id VARCHAR, step_id BIGINT, obs_idx BIGINT, call_id VARCHAR, status VARCHAR, error VARCHAR, return_code BIGINT, elapsed_s DOUBLE, content VARCHAR", &["session_id", "step_id", "obs_idx"]),
+];
+
+/// Derived views that ingest/synth also materialize to Parquet (eager); ctx() prefers the Parquet copy
+/// unless TDB_LAZY is set. Listed in dependency order with their sort keys.
+const DERIVED: &[(&str, &[&str])] = &[
+    ("metric_results", &["session_id", "step_id", "call_idx"]),
+    ("promql_steps", &["session_id", "stage", "step_id"]),
+    ("telemetry_calls", &["session_id", "step_id", "call_idx"]),
+    ("step_symbols", &["session_id", "stage", "step_id"]),
 ];
 
 #[tokio::main]
@@ -119,10 +129,24 @@ async fn ingest(root: &str) -> Res<()> {
         println!("{name}: {} rows", pretty_format_batches(&n)?.to_string().lines().nth(3).unwrap_or("?").trim_matches(|c| c == '|' || c == ' '));
     }
     fs::remove_dir_all(&stage)?;
+    materialize().await
+}
+
+/// Write each DERIVED view, evaluated lazily over the base tables, to <db>/<view>.parquet.
+async fn materialize() -> Res<()> {
+    let c = ctx_mode(true).await?;
+    for (name, keys) in DERIVED {
+        let t = Instant::now();
+        let out = Path::new(&db()).join(format!("{name}.parquet"));
+        c.sql(&format!("COPY (SELECT * FROM {name} ORDER BY {}) TO '{}' STORED AS PARQUET", keys.join(", "), out.display())).await?.collect().await?;
+        println!("{name}: materialized in {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
+    }
     Ok(())
 }
 
-async fn ctx() -> Res<SessionContext> {
+async fn ctx() -> Res<SessionContext> { ctx_mode(env::var_os("TDB_LAZY").is_some()).await }
+
+async fn ctx_mode(lazy: bool) -> Res<SessionContext> {
     let c = SessionContext::new();
     for (name, _, keys) in TABLES {
         let order = vec![keys.iter().map(|k| col(*k).sort(true, false)).collect()];
@@ -136,6 +160,13 @@ async fn ctx() -> Res<SessionContext> {
     let views: String = include_str!("views.sql").lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n");
     for v in views.split(';').filter(|v| !v.trim().is_empty()) {
         c.sql(v).await?;
+    }
+    for (name, keys) in DERIVED.iter().filter(|_| !lazy) {
+        let p = Path::new(&db()).join(format!("{name}.parquet"));
+        if !p.exists() { continue }
+        c.deregister_table(*name)?;
+        let order = vec![keys.iter().map(|k| col(*k).sort(true, false)).collect()];
+        c.register_parquet(*name, p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
     }
     Ok(c)
 }
@@ -186,7 +217,7 @@ async fn examples(update: bool) -> Res<()> {
 /// Copy every table N times with session_id suffixed "#k", keeping each table's sort order.
 // ponytail: replicas are identical copies (same problem_id/run); fine for timing walks, not for cross-run stats.
 async fn synth(n: u32, out: &str) -> Res<()> {
-    let c = ctx().await?;
+    let c = ctx_mode(true).await?; // base tables only; derived ones are rebuilt for the copy below
     fs::create_dir_all(out)?;
     for (name, _, keys) in TABLES {
         let p = Path::new(out).join(format!("{name}.parquet"));
@@ -195,5 +226,6 @@ async fn synth(n: u32, out: &str) -> Res<()> {
             n - 1, keys.join(", "), p.display())).await?.collect().await?;
     }
     println!("wrote {n}x copy to {out}");
-    Ok(())
+    unsafe { env::set_var("TDB_DB", out) };
+    materialize().await
 }

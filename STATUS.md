@@ -160,3 +160,30 @@ cd ../TrajectoryDB && cargo build --release
 **Implications / next options**
 - Eager vs. lazy (paper C1): materializing `step_symbols` and `telemetry_calls` at ingest would remove about 529 ms per reference. That is likely a bigger win than any operator at this scale. The cheapest next experiment is to add these as ingest-time tables and re-run `scale.sh`.
 - C5 (order as a plan property): `seq_match` buffers and sorts each partition in `evaluate()`. Using the declared `(session_id, step_id)` sort order to stream would matter only once matching itself dominates, which it currently does not (30 ms).
+
+## 2026-11-09 — M7: eager materialization (paper C1, eager vs lazy)
+
+**What was built**
+- `ingest` and `synth` now also write `metric_results`, `promql_steps`, `telemetry_calls` and `step_symbols` to Parquet (`DERIVED` in `src/main.rs`). `ctx()` swaps each view for its Parquet copy when the file exists. `TDB_LAZY=1` forces the views back.
+- **Correctness:** all 37 goldens and 20 examples are identical in eager and lazy modes, and `oracle/check.sh` passes.
+- **Cost:** 1× ingest goes from 0.7 s to 1.07 s, and the derived tables add 226 KB to a 7.5 MB db (+3%). At 50×, materialization takes 4.7 s on top of the replication itself.
+- `seq_match` got faster: compiled patterns are cached globally (they were compiled once per group), and symbols are mapped to pattern chars on arrival (no per-row strings).
+
+**W7a timings (median of 3; ms, including about 12 ms process startup)**
+| scale | lazy baseline | lazy seq_match | eager baseline | eager seq_match |
+|---|---|---|---|---|
+| 1× | 164 | 74 | 25 | 27 |
+| 10× | 399 | 226 | 30 | 51 |
+| 50× | 1668 | 936 | 62 | 159 |
+(The lazy seq_match column predates the seq_match speedups.)
+
+**Reading it**
+- **Eager materialization is the big win:** 27× for the self-join baseline at 50× (1668 → 62 ms), because the view had been recomputed once per self-join reference.
+- **After materialization, the plain-SQL 3-way self-join beats `seq_match` by about 2.6× at 50×.** DataFusion's hash join with range filter is cheap on materialized, sorted input.
+- `seq_match`'s remaining cost is DataFusion's per-group `Accumulator` path: one boxed accumulator per (session, stage), about 60k groups at 50×, and partial/final state serialized as `ScalarValue` lists. A vectorized `GroupsAccumulator` is the known fix.
+- So for fixed-length, bounded-gap patterns, `seq_match`'s case is **expressiveness, not speed**. Unbounded or variable-length patterns (`M+`, `A .* L`, alternation) have no plain-SQL join equivalent without a recursive CTE. That is the comparison to run next if pursuing C5.
+
+**Possible next steps**
+1. A W7b query with an unbounded pattern (e.g. a run of ≥3 consecutive metric steps that ends in logs). Compare `seq_match` with a recursive-CTE or gaps-and-islands baseline.
+2. A `GroupsAccumulator` for `seq_match`, then re-time.
+3. Decide what else to materialize (`promql` view? `promql_*` UDF results as columns?) and measure the ingest/storage cost against the query win.
