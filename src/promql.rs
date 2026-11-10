@@ -5,7 +5,10 @@
 //!   promql_matchers(q) -> list<utf8>  non-name label matchers, e.g. instance=~svc.*
 //!   promql_ranges(q)   -> list<utf8>  range / subquery windows, e.g. 5m
 //!   promql_error(q)    -> utf8        parse error, NULL if it parses
-//!   promql_normalize(q, mode) -> utf8 mode 'exact' only for now
+//!   promql_normalize(q, mode) -> utf8 modes, each coarser than the last:
+//!     'exact' (as sent) | 'canonical' (re-printed, matchers/by-labels sorted)
+//!     | 'no_window' (+ ranges, subquery windows and offsets blanked) | 'shape' (+ label values -> "_")
+//!     non-exact modes return NULL for unparseable queries
 //!   url_promql(text)   -> list<utf8>  URL-decoded query= params (PromQL inside curl)
 //! Every list UDF returns NULL when q is NULL or fails to parse.
 
@@ -16,7 +19,7 @@ use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::{create_udf, ColumnarValue, ScalarUDF, Volatility};
 use datafusion::prelude::SessionContext;
 use promql_parser::label::{MatchOp, METRIC_NAME};
-use promql_parser::parser::{parse, Expr, LabelModifier};
+use promql_parser::parser::{parse, Expr, LabelModifier, VectorSelector};
 use promql_parser::util::display_duration;
 use std::sync::Arc;
 
@@ -60,6 +63,36 @@ fn walk(e: &Expr, f: &mut Facts) {
         Expr::Call(c) => { f.funcs.push(c.func.name.to_string()); for a in &c.args.args { walk(a, f) } }
         Expr::NumberLiteral(_) | Expr::StringLiteral(_) | Expr::Extension(_) => {}
     }
+}
+
+/// Re-print q after canonicalizing; `win` blanks windows/offsets, `vals` blanks label values.
+pub fn normalize(q: &str, win: bool, vals: bool) -> Option<String> {
+    let mut e = parse(q).ok()?;
+    canon(&mut e, win, vals);
+    Some(e.to_string())
+}
+
+fn canon(e: &mut Expr, win: bool, vals: bool) {
+    let sort = |m: &mut Option<LabelModifier>| if let Some(LabelModifier::Include(l) | LabelModifier::Exclude(l)) = m { l.labels.sort() };
+    match e {
+        Expr::Aggregate(a) => { sort(&mut a.modifier); canon(&mut a.expr, win, vals); if let Some(p) = &mut a.param { canon(p, win, vals) } }
+        Expr::Unary(u) => canon(&mut u.expr, win, vals),
+        Expr::Binary(b) => { if let Some(m) = &mut b.modifier { sort(&mut m.matching) } canon(&mut b.lhs, win, vals); canon(&mut b.rhs, win, vals) }
+        Expr::Paren(p) => canon(&mut p.expr, win, vals),
+        Expr::Subquery(s) => { if win { s.range = Default::default(); s.offset = None } canon(&mut s.expr, win, vals) }
+        Expr::MatrixSelector(m) => { if win { m.range = Default::default() } sel(&mut m.vs, win, vals) }
+        Expr::VectorSelector(v) => sel(v, win, vals),
+        Expr::Call(c) => for a in c.args.args.iter_mut() { canon(a, win, vals) },
+        Expr::NumberLiteral(_) | Expr::StringLiteral(_) | Expr::Extension(_) => {}
+    }
+}
+
+fn sel(v: &mut VectorSelector, win: bool, vals: bool) {
+    if win { v.offset = None }
+    for m in v.matchers.matchers.iter_mut().chain(v.matchers.or_matchers.iter_mut().flatten()) {
+        if vals && m.name != METRIC_NAME { m.value = "_".into() }
+    }
+    v.matchers.matchers.sort_by(|a, b| (&a.name, a.op.to_string(), &a.value).cmp(&(&b.name, b.op.to_string(), &b.value)));
 }
 
 /// Every `query=` URL parameter in free text, percent-decoded.
@@ -133,10 +166,15 @@ pub fn register(c: &SessionContext) {
     c.register_udf(list_udf("promql_ranges", |q| facts(q).map(|f| f.ranges)));
     c.register_udf(list_udf("url_promql", |s| Some(url_promql(s))));
     c.register_udf(str_udf("promql_error", 1, |r| Ok(r[0].and_then(|q| parse(q).err()))));
-    // ponytail: only 'exact'; add modes (canonical AST print, strip label values) here when T5 needs them
-    c.register_udf(str_udf("promql_normalize", 2, |r| match r[1] {
-        Some("exact") => Ok(r[0].map(str::to_string)),
-        m => exec_err!("promql_normalize: unknown mode {m:?} (supported: 'exact')"),
+    c.register_udf(str_udf("promql_normalize", 2, |r| {
+        let (win, vals) = match r[1] {
+            Some("exact") => return Ok(r[0].map(str::to_string)),
+            Some("canonical") => (false, false),
+            Some("no_window") => (true, false),
+            Some("shape") => (true, true),
+            m => return exec_err!("promql_normalize: unknown mode {m:?} (exact|canonical|no_window|shape)"),
+        };
+        Ok(r[0].and_then(|q| normalize(q, win, vals)))
     }));
 }
 
@@ -154,5 +192,12 @@ mod tests {
         assert!(facts("rate(x[5m]").is_none());
         assert_eq!(url_promql("curl 'http://p:9090/api/v1/query_range?query=up%7Bjob%3D%22a%22%7D&step=30' | jq"), [r#"up{job="a"}"#]);
         assert_eq!(url_promql("x --data-urlencode query=sum(up)"), ["sum(up)"]);
+        let q = r#"sum by (b,a)(rate(x{z="1",a=~"2"}[5m] offset 1m))"#;
+        let n = |w, v| normalize(q, w, v).unwrap();
+        assert_eq!(n(false, false), normalize(r#"sum by(a, b) (rate(x{a=~"2", z="1"}[5m] offset 1m))"#, false, false).unwrap());
+        assert_ne!(n(true, false), n(false, false));
+        assert_eq!(n(true, false), normalize(r#"sum by (a,b)(rate(x{a=~"2",z="1"}[1h]))"#, true, false).unwrap());
+        assert_eq!(n(true, true), normalize(r#"sum by (a,b)(rate(x{a=~"9",z="8"}[1h]))"#, true, true).unwrap());
+        assert_ne!(n(true, true), normalize(r#"sum by (a,b)(rate(y{a=~"9",z="8"}[1h]))"#, true, true).unwrap());
     }
 }

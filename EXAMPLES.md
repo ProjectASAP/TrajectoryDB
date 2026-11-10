@@ -77,15 +77,21 @@ SELECT promql_metrics('{__name__=~"http.*"}') AS discovery, promql_metrics('{__n
 +-----------+--------------+---------------------------+
 ```
 
+`promql_normalize(q, mode)`: each mode is coarser than the one before. `exact` returns q unchanged. `canonical` re-prints it with matchers and `by` labels sorted. `no_window` also blanks windows and offsets. `shape` also blanks label values.
+
 ```sql
-SELECT promql_normalize('up{job="api"}', 'exact') AS exact
+SELECT mode, promql_normalize('sum by (b,a) (rate(x{z="1",a="2"}[5m] offset 1m))', mode) AS key
+FROM (VALUES (1, 'exact'), (2, 'canonical'), (3, 'no_window'), (4, 'shape')) t(o, mode) ORDER BY o
 ```
 ```text
-+---------------+
-| exact         |
-+---------------+
-| up{job="api"} |
-+---------------+
++-----------+----------------------------------------------------+
+| mode      | key                                                |
++-----------+----------------------------------------------------+
+| exact     | sum by (b,a) (rate(x{z="1",a="2"}[5m] offset 1m))  |
+| canonical | sum by (a, b) (rate(x{a="2",z="1"}[5m] offset 1m)) |
+| no_window | sum by (a, b) (rate(x{a="2",z="1"}[0s]))           |
+| shape     | sum by (a, b) (rate(x{a="_",z="_"}[0s]))           |
++-----------+----------------------------------------------------+
 ```
 
 ```sql
