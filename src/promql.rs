@@ -9,6 +9,8 @@
 //!     'exact' (as sent) | 'canonical' (re-printed, matchers/by-labels sorted)
 //!     | 'no_window' (+ ranges, subquery windows and offsets blanked) | 'shape' (+ label values -> "_")
 //!     non-exact modes return NULL for unparseable queries
+//!   promql_asap_class(q) -> utf8     which ASAPQuery planner pattern q matches (see asap_class)
+//!   promql_asap_blocker(q) -> utf8  for 'unsupported' queries: the outermost reason (see asap_blocker)
 //!   url_promql(text)   -> list<utf8>  URL-decoded query= params (PromQL inside curl)
 //! Every list UDF returns NULL when q is NULL or fails to parse.
 
@@ -95,6 +97,92 @@ fn sel(v: &mut VectorSelector, win: bool, vals: bool) {
     v.matchers.matchers.sort_by(|a, b| (&a.name, a.op.to_string(), &a.value).cmp(&(&b.name, b.op.to_string(), &b.value)));
 }
 
+/// Mirror of ASAPQuery's planner pattern table (ASAPQuery@c439bf4: asap-planner-rs/src/planner/patterns.rs,
+/// promql_utilities/src/ast_matching/collapsable_patterns.rs, query_logics/logics.rs::get_is_collapsable,
+/// query_logics/enums.rs::is_approximate). Classes:
+///   asap_approx  matches a pattern whose statistic is approximate (sum/count/avg/quantile/topk family)
+///   asap_exact   matches a pattern but statistic is exact (rate, increase, min, max)
+///   asap_binary  top-level arithmetic whose every arm is asap_* or a number (planner splits binary arms)
+///   raw_selector plain vector/matrix selector    discovery  no metric name
+///   unsupported  anything else                   unparsed   parser rejects it
+// ponytail: re-implemented, not linked; parens around a pattern count as unsupported (planner does not strip them).
+pub fn asap_class(q: &str) -> &'static str {
+    let Ok(e) = parse(q) else { return "unparsed" };
+    if facts(q).is_some_and(|f| f.metrics.is_empty()) { return "discovery" }
+    match asap_match(&e) {
+        Some(true) => "asap_approx",
+        Some(false) => "asap_exact",
+        None => match &e {
+            Expr::VectorSelector(_) | Expr::MatrixSelector(_) => "raw_selector",
+            Expr::Binary(b) if matches!(b.op.to_string().as_str(), "+" | "-" | "*" | "/" | "%" | "^")
+                && [&b.lhs, &b.rhs].iter().all(|x| matches!(***x, Expr::NumberLiteral(_)) || asap_match(x).is_some()) => "asap_binary",
+            _ => "unsupported",
+        },
+    }
+}
+
+/// Why an 'unsupported' query misses every pattern (outermost construct). NULL for other classes.
+///   comparison: top level is a comparison (x > 0); `_on_asap` if its non-scalar arm(s) would match a pattern
+///   agg_over_rate: sum/avg/topk/... over rate/increase (not collapsable in ASAPQuery)
+///   arithmetic: + - * / with an arm that does not match; histogram_quantile; subquery (x[10m:1m]); other_agg; other_func; other
+pub fn asap_blocker(q: &str) -> Option<&'static str> {
+    if asap_class(q) != "unsupported" { return None }
+    let e = parse(q).ok()?;
+    let arm_ok = |x: &Expr| matches!(x, Expr::NumberLiteral(_)) || asap_match(x).is_some();
+    Some(match &e {
+        Expr::Binary(b) if matches!(b.op.to_string().as_str(), "==" | "!=" | ">" | "<" | ">=" | "<=") =>
+            if arm_ok(&b.lhs) && arm_ok(&b.rhs) { "comparison_on_asap" } else { "comparison" },
+        Expr::Binary(_) => "arithmetic",
+        Expr::Aggregate(a) => match &*a.expr {
+            Expr::Call(c) if matches!(c.func.name, "rate" | "increase" | "irate") => "agg_over_rate",
+            Expr::Aggregate(i) if matches!(&*i.expr, Expr::Call(c) if matches!(c.func.name, "rate" | "increase" | "irate")) => "agg_over_rate",
+            _ => "other_agg",
+        },
+        Expr::Call(c) if c.func.name == "histogram_quantile" => "histogram_quantile",
+        Expr::Call(_) => "other_func",
+        Expr::Subquery(_) => "subquery",
+        _ => "other",
+    })
+}
+
+/// Some(approximate?) if e matches one of the planner's patterns.
+fn asap_match(e: &Expr) -> Option<bool> {
+    let metric = |e: &Expr| matches!(e, Expr::VectorSelector(_));
+    // temporal function over metric[range] -> its name
+    let temporal = |e: &Expr| -> Option<&'static str> {
+        let Expr::Call(c) = e else { return None };
+        let a = &c.args.args;
+        let ok = match c.func.name {
+            "quantile_over_time" => a.len() == 2 && matches!(*a[0], Expr::NumberLiteral(_)) && matches!(*a[1], Expr::MatrixSelector(_)),
+            "sum_over_time" | "count_over_time" | "avg_over_time" | "min_over_time" | "max_over_time" | "increase" | "rate" =>
+                a.len() == 1 && matches!(*a[0], Expr::MatrixSelector(_)),
+            _ => false,
+        };
+        ok.then_some(c.func.name)
+    };
+    let approx_fn = |f: &str| matches!(f, "quantile_over_time" | "sum_over_time" | "count_over_time" | "avg_over_time");
+    let collapsable = |f: &str, op: &str| match op {
+        "sum" | "topk" => matches!(f, "sum_over_time" | "count_over_time"),
+        "min" => f == "min_over_time",
+        "max" => f == "max_over_time",
+        _ => false,
+    };
+    match e {
+        Expr::Call(_) => temporal(e).map(approx_fn),
+        Expr::Aggregate(a) => {
+            let op = a.op.to_string().to_lowercase();
+            if !matches!(op.as_str(), "sum" | "count" | "avg" | "quantile" | "min" | "max" | "topk") { return None }
+            if metric(&a.expr) { return Some(!matches!(op.as_str(), "min" | "max")) }
+            if let Some(f) = temporal(&a.expr) { return collapsable(f, &op).then(|| !matches!(op.as_str(), "min" | "max")) }
+            if let (Expr::Aggregate(inner), "topk") = (&*a.expr, op.as_str()) {
+                if inner.op.to_string().to_lowercase() == "sum" && temporal(&inner.expr).is_some_and(|f| collapsable(f, "sum")) { return Some(true) }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Every `query=` URL parameter in free text, percent-decoded.
 pub fn url_promql(s: &str) -> Vec<String> {
     s.match_indices("query=").filter(|(i, _)| *i == 0 || !s.as_bytes()[i - 1].is_ascii_alphanumeric())
@@ -165,6 +253,8 @@ pub fn register(c: &SessionContext) {
     c.register_udf(list_udf("promql_matchers", |q| facts(q).map(|f| f.matchers)));
     c.register_udf(list_udf("promql_ranges", |q| facts(q).map(|f| f.ranges)));
     c.register_udf(list_udf("url_promql", |s| Some(url_promql(s))));
+    c.register_udf(str_udf("promql_asap_class", 1, |r| Ok(r[0].map(|q| asap_class(q).to_string()))));
+    c.register_udf(str_udf("promql_asap_blocker", 1, |r| Ok(r[0].and_then(asap_blocker).map(str::to_string))));
     c.register_udf(str_udf("promql_error", 1, |r| Ok(r[0].and_then(|q| parse(q).err()))));
     c.register_udf(str_udf("promql_normalize", 2, |r| {
         let (win, vals) = match r[1] {
@@ -190,6 +280,20 @@ mod tests {
         assert_eq!(f.matchers, ["job=api", "code=~5.."]);
         assert_eq!(f.ranges, ["5m"]);
         assert!(facts("rate(x[5m]").is_none());
+        // cases from ASAPQuery's patterns.rs tests
+        for (q, c) in [("quantile_over_time(0.99, x[5m])", "asap_approx"), ("rate(x[5m])", "asap_exact"), ("sum by (a) (x)", "asap_approx"),
+            ("max(x)", "asap_exact"), ("sum(sum_over_time(x[5m]))", "asap_approx"), ("min(min_over_time(x[5m]))", "asap_exact"),
+            ("topk by (job) (3, count_over_time(x[5m]))", "asap_approx"), ("topk(32, sum by (l) (sum_over_time(d[15m])))", "asap_approx"),
+            ("sum(rate(x[5m]))", "unsupported"), ("avg(rate(x[5m]))", "unsupported"), ("topk(1, rate(x[5m]))", "unsupported"),
+            ("topk(32, sum by (l) (rate(d[15m])))", "unsupported"), ("sum(min_over_time(x[5m]))", "unsupported"),
+            ("x", "raw_selector"), ("x[5m]", "raw_selector"), ("{__name__=~\"a.*\"}", "discovery"), ("rate(x[5m]", "unparsed"),
+            ("sum(x) / count(x)", "asap_binary"), ("sum(x) > 0", "unsupported"), ("histogram_quantile(0.9, x)", "unsupported")] {
+            assert_eq!(asap_class(q), c, "{q}");
+        }
+        for (q, b) in [("sum(rate(x[5m]))", Some("agg_over_rate")), ("sum(x) > 0", Some("comparison_on_asap")), ("sum(rate(x[1m])) > 0", Some("comparison")),
+            ("histogram_quantile(0.9, x)", Some("histogram_quantile")), ("sum(x)", None)] {
+            assert_eq!(asap_blocker(q), b, "{q}");
+        }
         assert_eq!(url_promql("curl 'http://p:9090/api/v1/query_range?query=up%7Bjob%3D%22a%22%7D&step=30' | jq"), [r#"up{job="a"}"#]);
         assert_eq!(url_promql("x --data-urlencode query=sum(up)"), ["sum(up)"]);
         let q = r#"sum by (b,a)(rate(x{z="1",a=~"2"}[5m] offset 1m))"#;

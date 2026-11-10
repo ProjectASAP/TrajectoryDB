@@ -1,0 +1,19 @@
++-------------------------------------------------------------------------------------------------------------------------------------------------------------+-------+----------+
+| shape                                                                                                                                                       | calls | sessions |
++-------------------------------------------------------------------------------------------------------------------------------------------------------------+-------+----------+
+| sum by (method, name) (rate(locust_requests_num_failures[0s]))                                                                                              | 26    | 26       |
+| sum by (name) (increase(locust_requests_num_failures[0s])) > 0                                                                                              | 15    | 7        |
+| sum by (name) (rate(locust_requests_num_failures[0s])) > 0                                                                                                  | 14    | 8        |
+| sum by (method, name) (rate(locust_requests_num_failures[0s])) > 0                                                                                          | 12    | 7        |
+| sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace="_"}[0s])) / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace="_"}[0s])) | 11    | 7        |
+| sum by (service_name, span_name) (rate(traces_span_metrics_calls_total{status_code="_"}[0s]))                                                               | 11    | 11       |
+| pg_locks_count{mode=~"_"} > 0                                                                                                                               | 9     | 9        |
+| sum by (service, status) (rate(http_requests_total[0s]))                                                                                                    | 9     | 9        |
+| sum by (service_name, span_name, status_code) (increase(traces_span_metrics_calls_total{span_name=~"_"}[0s]))                                               | 9     | 3        |
+| up{namespace="_"} == 0                                                                                                                                      | 9     | 8        |
+| pg_locks_count{datname="_"} > 0                                                                                                                             | 8     | 8        |
+| sum by (service_name, span_name, status_code) (rate(traces_span_metrics_calls_total{status_code="_"}[0s]))                                                  | 8     | 8        |
+| sum(increase(locust_requests_num_failures[0s]))                                                                                                             | 8     | 5        |
+| sum(rate(locust_requests_num_failures[0s]))                                                                                                                 | 8     | 6        |
+| sum(rate(locust_requests_num_failures[0s])) / sum(rate(locust_requests_num_requests[0s]))                                                                   | 8     | 8        |
++-------------------------------------------------------------------------------------------------------------------------------------------------------------+-------+----------+

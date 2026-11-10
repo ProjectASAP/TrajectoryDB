@@ -105,6 +105,24 @@ SELECT url_promql('curl "http://p:9090/api/v1/query_range?query=sum%28up%29&step
 +-----------+
 ```
 
+`promql_asap_class` mirrors ASAPQuery's planner patterns. `promql_asap_blocker` gives the reason a query is unsupported.
+
+```sql
+SELECT q, promql_asap_class(q) AS class, promql_asap_blocker(q) AS blocker
+FROM (VALUES (1, 'quantile_over_time(0.99, x[5m])'), (2, 'rate(x[5m])'), (3, 'sum(rate(x[5m]))'), (4, 'sum(x) > 0'), (5, 'x')) t(o, q) ORDER BY o
+```
+```text
++---------------------------------+--------------+--------------------+
+| q                               | class        | blocker            |
++---------------------------------+--------------+--------------------+
+| quantile_over_time(0.99, x[5m]) | asap_approx  |                    |
+| rate(x[5m])                     | asap_exact   |                    |
+| sum(rate(x[5m]))                | unsupported  | agg_over_rate      |
+| sum(x) > 0                      | unsupported  | comparison_on_asap |
+| x                               | raw_selector |                    |
++---------------------------------+--------------+--------------------+
+```
+
 ## Shell and argument UDFs
 
 ```sql
