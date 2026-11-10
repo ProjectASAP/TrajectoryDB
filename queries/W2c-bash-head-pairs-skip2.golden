@@ -1,0 +1,24 @@
++--------------------------------+-------------+----------+----------+
+| pattern                        | occurrences | attempts | problems |
++--------------------------------+-------------+----------+----------+
+| kubectl get → kubectl get      | 22397       | 558      | 208      |
+| tail → kubectl get             | 4696        | 486      | 193      |
+| grep → kubectl get             | 7422        | 456      | 189      |
+| kubectl get → grep             | 7840        | 450      | 190      |
+| sleep → kubectl get            | 1403        | 426      | 179      |
+| grep → grep                    | 4534        | 374      | 173      |
+| tail → grep                    | 1679        | 345      | 176      |
+| kubectl rollout → kubectl get  | 1929        | 335      | 148      |
+| kubectl get → jq               | 4713        | 309      | 168      |
+| kubectl describe → kubectl get | 1856        | 308      | 141      |
+| jq → kubectl get               | 3770        | 296      | 160      |
+| head → kubectl get             | 1757        | 278      | 160      |
+| sleep → grep                   | 592         | 278      | 141      |
+| kubectl get → sleep            | 703         | 266      | 141      |
+| kubectl get → head             | 1567        | 261      | 156      |
+| kubectl get → kubectl rollout  | 1192        | 254      | 137      |
+| kubectl get → kubectl logs     | 2829        | 248      | 136      |
+| tail → jq                      | 1075        | 247      | 139      |
+| kubectl patch → kubectl get    | 1549        | 239      | 107      |
+| kubectl get → tail             | 1937        | 236      | 139      |
++--------------------------------+-------------+----------+----------+

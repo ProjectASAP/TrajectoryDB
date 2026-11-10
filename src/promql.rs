@@ -127,7 +127,7 @@ fn out(a: ArrayRef, scalar: bool) -> Result<ColumnarValue> {
     Ok(if scalar { ColumnarValue::Scalar(datafusion::common::ScalarValue::try_from_array(&a, 0)?) } else { ColumnarValue::Array(a) })
 }
 
-fn list_udf(name: &str, f: fn(&str) -> Option<Vec<String>>) -> ScalarUDF {
+pub fn list_udf(name: &str, f: fn(&str) -> Option<Vec<String>>) -> ScalarUDF {
     let ty = DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true)));
     create_udf(name, vec![DataType::Utf8], ty, Volatility::Immutable, Arc::new(move |args: &[ColumnarValue]| {
         let (a, scalar) = strings(&args[0])?;
@@ -143,7 +143,7 @@ fn list_udf(name: &str, f: fn(&str) -> Option<Vec<String>>) -> ScalarUDF {
     }))
 }
 
-fn str_udf(name: &str, n: usize, f: fn(&[Option<&str>]) -> Result<Option<String>>) -> ScalarUDF {
+pub fn str_udf(name: &str, n: usize, f: fn(&[Option<&str>]) -> Result<Option<String>>) -> ScalarUDF {
     create_udf(name, vec![DataType::Utf8; n], DataType::Utf8, Volatility::Immutable, Arc::new(move |args: &[ColumnarValue]| {
         let scalar = args.iter().all(|x| matches!(x, ColumnarValue::Scalar(_)));
         let len = args.iter().find_map(|x| match x { ColumnarValue::Array(a) => Some(a.len()), _ => None }).unwrap_or(1);

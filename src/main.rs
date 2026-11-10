@@ -6,6 +6,7 @@
 //! TDB_DB=<dir> overrides the db directory (default ./db).
 
 mod promql;
+mod shell;
 
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
@@ -126,6 +127,7 @@ async fn ctx() -> Res<SessionContext> {
         c.register_parquet(*name, p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
     }
     promql::register(&c);
+    shell::register(&c);
     for v in include_str!("views.sql").split(';').filter(|v| v.lines().any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"))) {
         c.sql(v).await?;
     }
