@@ -14,7 +14,7 @@ Every example below is a runnable query with its real output. `tdb examples` re-
 
 Queries over the full corpus live in `queries/` (checked by `tdb bench`); section headings below name the relevant ones.
 
-Contents: [1 Data model](#1-data-model) · [2 Tool calls](#2-what-did-the-agent-ask-its-tools) · [3 Walks](#3-walking-a-trajectory) · [4 Sequence patterns](#4-sequence-patterns) · [5 Comparing runs](#5-comparing-runs-of-the-same-problem) · [6 LLM analysis](#6-semantic-analysis-with-an-llm) · [7 Physical design](#7-physical-design)
+Contents: [1 Data model](#1-data-model) · [2 Tool calls](#2-what-did-the-agent-ask-its-tools) · [3 Walks](#3-walking-a-trajectory) · [4 Sequence patterns](#4-sequence-patterns) · [5 Comparing runs](#5-comparing-runs-of-the-same-problem) · [6 LLM analysis](#6-semantic-analysis-with-an-llm) · [7 Your own functions](#7-your-own-functions) · [8 Physical design](#8-physical-design)
 
 ## 1 Data model
 
@@ -351,17 +351,17 @@ GROUP BY 1, 2, 3, 4, 5
 `step_symbols` numbers agent steps within (session, stage). Its `sym` column takes one symbol by priority: A(lerts) > M(etrics) > L(ogs) > K(8s state), else NULL. Corpus: `W7a` (vs. a self-join) and `W7b` (vs. gaps-and-islands).
 
 ```sql
-SELECT session_id, stage, array_agg(coalesce(sym, '-') ORDER BY pos) AS syms,
+SELECT session_id, stage, array_agg(coalesce(sym, '_') ORDER BY pos) AS seq,
   seq_match(pos, step_id, sym, 'A M') AS a_then_m,
   seq_match(pos, step_id, sym, 'M .{0,1} K') AS m_gap_k
 FROM step_symbols GROUP BY 1, 2 ORDER BY 1, 2
 ```
 ```text
 +------------+------------+--------------+----------+----------+
-| session_id | stage      | syms         | a_then_m | m_gap_k  |
+| session_id | stage      | seq          | a_then_m | m_gap_k  |
 +------------+------------+--------------+----------+----------+
-| s1         | diagnosis  | [A, M, K, -] | [[3, 4]] | [[4, 5]] |
-| s1         | mitigation | [-, M, M, M] | []       | []       |
+| s1         | diagnosis  | [A, M, K, _] | [[3, 4]] | [[4, 5]] |
+| s1         | mitigation | [_, M, M, M] | []       | []       |
 | s2         | diagnosis  | [M, M]       | []       | []       |
 +------------+------------+--------------+----------+----------+
 ```
@@ -438,10 +438,10 @@ SELECT unnest(array_intersect(a.m, b.m)) AS shared_metric FROM
 
 ### Sequences: where did they diverge?
 
-`seq_prefix(a, b)` is the length of the common prefix. `seq_edit_distance(a, b)` is the Levenshtein distance. `seq_align(a, b)` is one optimal alignment, where `x` = same, `x>y` = a did x where b did y, `x>` = only in a and `>y` = only in b. They work on any `list<utf8>`: step symbols, tool names or PromQL shapes. Corpus: `X1a` (similarity by outcome), `X1b` (what each did at the divergence) and `X1c` (aligned differences).
+`seq_prefix(a, b)` is the length of the common prefix. `seq_edit_distance(a, b)` is the Levenshtein distance. `seq_align(a, b)` is one optimal alignment, where `x` = same, `x>y` = a did x where b did y, `x>` = only in a and `>y` = only in b. (`_` below is a step with no telemetry call.) They work on any `list<utf8>`: step symbols, tool names or PromQL shapes. Corpus: `X1a` (similarity by outcome), `X1b` (what each did at the divergence) and `X1c` (aligned differences).
 
 ```sql
-WITH q AS (SELECT session_id, array_agg(coalesce(sym, '-') ORDER BY pos) AS q FROM step_symbols WHERE stage = 'diagnosis' GROUP BY 1)
+WITH q AS (SELECT session_id, array_agg(coalesce(sym, '_') ORDER BY pos) AS q FROM step_symbols WHERE stage = 'diagnosis' GROUP BY 1)
 SELECT a.q AS s1, b.q AS s2, seq_prefix(a.q, b.q) AS prefix, seq_edit_distance(a.q, b.q) AS dist, seq_align(a.q, b.q) AS alignment
 FROM q a, q b WHERE a.session_id = 's1' AND b.session_id = 's2'
 ```
@@ -449,7 +449,7 @@ FROM q a, q b WHERE a.session_id = 's1' AND b.session_id = 's2'
 +--------------+--------+--------+------+------------------+
 | s1           | s2     | prefix | dist | alignment        |
 +--------------+--------+--------+------+------------------+
-| [A, M, K, -] | [M, M] | 0      | 3    | [A>M, M, K>, ->] |
+| [A, M, K, _] | [M, M] | 0      | 3    | [A>M, M, K>, _>] |
 +--------------+--------+--------+------+------------------+
 ```
 
@@ -499,9 +499,41 @@ GROUP BY 1, 2
 
 `llm` is volatile on purpose. Otherwise the optimizer may push a filter on its output below a join and call the model on rows the join would have dropped.
 
-## 7 Physical design
+## 7 Your own functions
 
-`src/views.sql` declares the derived views. A view written `CREATE MATERIALIZED VIEW v ORDER BY (k, ...) AS q` is computed at `ingest` (and `synth`) into `db/v.parquet`, sorted by `k`, and queries read that copy. `TDB_LAZY=1` evaluates every view from the base tables instead. Results are identical either way, and `tdb bench` passes in both modes.
+`CREATE FUNCTION name(arg TYPE, ...) [RETURNS TYPE] RETURN <expr>` defines a scalar function in SQL, no rebuild. Arguments are named or positional (`$1`). Each call is inlined into the query, so the optimizer sees the plain expression. The body may call any function, including `llm()` and other SQL functions. Definitions last one session: put them before the query (`tdb sql "CREATE FUNCTION ...; SELECT ..."`) or in `defs.sql` (or `$TDB_DEFS`), which runs at startup and may also hold `CREATE VIEW`s. Scalar only; aggregates like `seq_match` are Rust.
+
+```sql
+CREATE OR REPLACE FUNCTION norm_dist(a VARCHAR[], b VARCHAR[]) RETURN seq_edit_distance(a, b) / greatest(array_length(a), array_length(b), 1)::double;
+CREATE OR REPLACE FUNCTION similar(a VARCHAR[], b VARCHAR[]) RETURNS BOOLEAN RETURN norm_dist(a, b) <= 0.34;
+SELECT norm_dist(['A', 'M', 'L'], ['A', 'K', 'L']) AS d, similar(['A', 'M', 'L'], ['A', 'K', 'L']) AS sim
+```
+```text
++--------------------+------+
+| d                  | sim  |
++--------------------+------+
+| 0.3333333333333333 | true |
++--------------------+------+
+```
+
+A prompt template is just a function over `llm()`:
+
+```sql
+CREATE OR REPLACE FUNCTION blamed_workload(diagnosis VARCHAR) RETURNS VARCHAR
+  RETURN llm('Name the workload this diagnosis blames, in lowercase, nothing else: ' || diagnosis);
+SELECT session_id, blamed_workload(message) AS blamed FROM steps WHERE source = 'agent' AND stage = 'diagnosis' AND length(message) > 0
+```
+```text
++------------+--------+
+| session_id | blamed |
++------------+--------+
+| s1         | api    |
++------------+--------+
+```
+
+## 8 Physical design
+
+`src/views.sql` declares the built-in derived views (compiled in; your own go in `defs.sql`). A view written `CREATE MATERIALIZED VIEW v ORDER BY (k, ...) AS q` is computed at `ingest` (and `synth`) into `db/v.parquet`, sorted by `k`, and queries read that copy. `TDB_LAZY=1` evaluates every view from the base tables instead. Results are identical either way, and `tdb bench` passes in both modes.
 
 ```
 TDB_LAZY=1 tdb sql "..."       # lazy: views over base tables

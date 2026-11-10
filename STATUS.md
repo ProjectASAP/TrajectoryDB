@@ -244,3 +244,15 @@ cd ../TrajectoryDB && cargo build --release
 - `tdb examples` pins TDB_LLM_CACHE=examples/llm_cache.jsonl (hand-written responses) and TDB_LLM_MAX_CALLS=0.
 - Correction: seq_align's old notation was ambiguous with the '-' no-symbol placeholder ("->M" was both "insert M"
   and "'-' replaced by M"). Now deletion = "x>", insertion = ">y". X1c: >M 57, >L 45 (previously reported 58/48).
+
+## CREATE FUNCTION (SQL macros) + README
+- `CREATE [OR REPLACE] FUNCTION f(a TYPE, ...) [RETURNS TYPE] RETURN <expr>` via DataFusion's FunctionFactory (src/udf.rs).
+  Calls are inlined in ScalarUDFImpl::simplify; arguments are cast to the declared types (coerce_types).
+- Two DataFusion gaps worked around: (1) the body is planned with positional $1.. only, so named args are rewritten
+  to placeholders in the sqlparser AST first; (2) the body never goes through type coercion (analyzer only sees
+  queries), so `x + 1` with x INT failed at runtime (Int32 + Int64). We coerce the body at CREATE time over a schema
+  of the args. RETURNS is optional (inferred from the body).
+- `tdb sql` / bench / examples now run `;`-separated statements (last result printed). `defs.sql` / $TDB_DEFS is run
+  at startup (user functions and views without a rebuild). src/views.sql is still compiled in (include_str!).
+- Scalar only: SQL-defined aggregates/table functions need a query body, not an expression.
+- README.md added; EXAMPLES §7 "Your own functions" (28 examples). '-' no-symbol placeholder in examples is now '_'.

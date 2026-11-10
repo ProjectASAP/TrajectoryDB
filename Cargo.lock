@@ -2778,6 +2778,7 @@ dependencies = [
 name = "tdb"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "datafusion",
  "promql-parser",
  "regex",

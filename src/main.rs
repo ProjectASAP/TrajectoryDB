@@ -5,6 +5,7 @@
 //!   tdb examples [--update]     ingest examples/fixture, check every sql/text pair in EXAMPLES.md
 //!   tdb synth <N> <dir>         replicate every session N times (new session_ids) into <dir>, for timing
 //! TDB_DB=<dir> overrides the db directory (default ./db).
+//! TDB_DEFS=<file> user definitions (CREATE FUNCTION / CREATE VIEW ...;) run at startup (default ./defs.sql, if present).
 //! TDB_LAZY=1 ignores materialized derived tables and evaluates their views on the fly (eager vs lazy, paper C1).
 
 mod promql;
@@ -12,6 +13,7 @@ mod shell;
 mod seq;
 mod align;
 mod llm;
+mod udf;
 
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
@@ -52,7 +54,7 @@ async fn main() -> Res<()> {
     match a.get(1).map(String::as_str) {
         Some("ingest") => ingest(a.get(2).ok_or("usage: tdb ingest <trace-root>")?).await,
         Some("sql") => {
-            let b = ctx().await?.sql(a.get(2).ok_or("usage: tdb sql <query>")?).await?.collect().await?;
+            let b = run(&ctx().await?, a.get(2).ok_or("usage: tdb sql <query>")?).await?;
             println!("{}", pretty_format_batches(&b)?);
             Ok(())
         }
@@ -154,10 +156,20 @@ async fn materialize() -> Res<()> {
     Ok(())
 }
 
+/// Run one or more ';'-separated statements; returns the last one's result.
+async fn run(c: &SessionContext, sql: &str) -> datafusion::common::Result<Vec<datafusion::arrow::record_batch::RecordBatch>> {
+    let mut out = vec![];
+    for mut st in datafusion::sql::parser::DFParser::parse_sql(sql)? {
+        if let datafusion::sql::parser::Statement::Statement(s) = &mut st { udf::named_args_to_positional(s) }
+        out = c.execute_logical_plan(c.state().statement_to_plan(st).await?).await?.collect().await?;
+    }
+    Ok(out)
+}
+
 async fn ctx() -> Res<SessionContext> { ctx_mode(env::var_os("TDB_LAZY").is_some()).await }
 
 async fn ctx_mode(lazy: bool) -> Res<SessionContext> {
-    let c = SessionContext::new();
+    let c = SessionContext::new().with_function_factory(std::sync::Arc::new(udf::SqlFunctions));
     for (name, _, keys) in TABLES {
         let order = vec![keys.iter().map(|k| col(*k).sort(true, false)).collect()];
         let p = Path::new(&db()).join(format!("{name}.parquet"));
@@ -179,6 +191,8 @@ async fn ctx_mode(lazy: bool) -> Res<SessionContext> {
         let order = vec![keys.iter().map(|k| col(k.as_str()).sort(true, false)).collect()];
         c.register_parquet(name.as_str(), p.to_str().unwrap(), ParquetReadOptions::default().file_sort_order(order)).await?;
     }
+    let defs = env::var("TDB_DEFS").unwrap_or_else(|_| "defs.sql".into());
+    if let Ok(sql) = fs::read_to_string(&defs) { run(&c, &sql).await.map_err(|e| format!("{defs}: {e}"))?; }
     Ok(c)
 }
 
@@ -190,7 +204,7 @@ async fn bench(update: bool) -> Res<()> {
     let mut fail = 0;
     for q in qs {
         let t = Instant::now();
-        let got = pretty_format_batches(&c.sql(&fs::read_to_string(&q)?).await?.collect().await?)?.to_string() + "\n";
+        let got = pretty_format_batches(&run(&c, &fs::read_to_string(&q)?).await?)?.to_string() + "\n";
         let ms = t.elapsed().as_secs_f64() * 1e3;
         let g = q.with_extension("golden");
         let verdict = if update { fs::write(&g, &got)?; "UPDATED" }
@@ -209,6 +223,7 @@ async fn examples(update: bool) -> Res<()> {
         env::set_var("TDB_LLM_CACHE", "examples/llm_cache.jsonl");
         env::set_var("TDB_LLM_MODEL", "claude-opus-5-5");
         env::set_var("TDB_LLM_MAX_CALLS", "0");
+        env::set_var("TDB_DEFS", ""); // ignore a local defs.sql
     }
     ingest("examples/fixture").await?;
     let c = ctx().await?;
@@ -221,7 +236,7 @@ async fn examples(update: bool) -> Res<()> {
         let body: Vec<&str> = lines.by_ref().take_while(|x| *x != "```").collect();
         if l == "```sql" { sql = Some(body.join("\n")); out += &body.iter().map(|x| format!("{x}\n")).collect::<String>(); out += "```\n"; continue }
         let q = sql.take().ok_or("```text block without preceding ```sql")?;
-        let got = match c.sql(&q).await { Ok(df) => match df.collect().await { Ok(b) => pretty_format_batches(&b)?.to_string(), Err(e) => format!("ERROR: {e}") }, Err(e) => format!("ERROR: {e}") };
+        let got = match run(&c, &q).await { Ok(b) => pretty_format_batches(&b)?.to_string(), Err(e) => format!("ERROR: {e}") };
         n += 1;
         if got != body.join("\n") { fail += 1; if !update { println!("FAIL:\n{q}\n--- expected\n{}\n--- got\n{got}\n", body.join("\n")) } }
         out += &got; out += "\n```\n";
