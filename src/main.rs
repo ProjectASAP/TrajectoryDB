@@ -3,6 +3,7 @@
 //!   tdb sql "<query>"           run SQL over db/
 //!   tdb bench [--update]        run queries/*.sql, diff against .golden
 //!   tdb examples [--update]     ingest examples/fixture, check every sql/text pair in EXAMPLES.md
+//!   tdb synth <N> <dir>         replicate every session N times (new session_ids) into <dir>, for timing
 //! TDB_DB=<dir> overrides the db directory (default ./db).
 
 mod promql;
@@ -36,8 +37,9 @@ async fn main() -> Res<()> {
             Ok(())
         }
         Some("bench") => bench(a.iter().any(|x| x == "--update")).await,
+        Some("synth") => synth(a.get(2).ok_or("usage: tdb synth <N> <dir>")?.parse()?, a.get(3).ok_or("usage: tdb synth <N> <dir>")?).await,
         Some("examples") => examples(a.iter().any(|x| x == "--update")).await,
-        _ => Err("usage: tdb ingest <root> | sql <q> | bench [--update] | examples [--update]".into()),
+        _ => Err("usage: tdb ingest <root> | sql <q> | bench [--update] | examples [--update] | synth <N> <dir>".into()),
     }
 }
 
@@ -179,4 +181,19 @@ async fn examples(update: bool) -> Res<()> {
     if update { fs::write("EXAMPLES.md", out)?; println!("{n} examples, {fail} updated"); return Ok(()) }
     println!("{n} examples, {fail} failed");
     if fail > 0 { Err(format!("{fail} examples failed").into()) } else { Ok(()) }
+}
+
+/// Copy every table N times with session_id suffixed "#k", keeping each table's sort order.
+// ponytail: replicas are identical copies (same problem_id/run); fine for timing walks, not for cross-run stats.
+async fn synth(n: u32, out: &str) -> Res<()> {
+    let c = ctx().await?;
+    fs::create_dir_all(out)?;
+    for (name, _, keys) in TABLES {
+        let p = Path::new(out).join(format!("{name}.parquet"));
+        c.sql(&format!("COPY (SELECT * EXCLUDE (k) REPLACE (session_id || '#' || CAST(k AS VARCHAR) AS session_id)
+            FROM {name} CROSS JOIN (SELECT value AS k FROM generate_series(0, {}) ) ORDER BY {}) TO '{}' STORED AS PARQUET",
+            n - 1, keys.join(", "), p.display())).await?.collect().await?;
+    }
+    println!("wrote {n}x copy to {out}");
+    Ok(())
 }

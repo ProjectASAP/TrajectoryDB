@@ -134,3 +134,29 @@ cd ../TrajectoryDB && cargo build --release
 - W6b: after a PromQL step that filters on `namespace="X"`, logs for namespace X follow within 3 steps 54.5% of the time in diagnosis.
 
 **Process incident (no damage).** A shell heredoc used to edit `EXAMPLES.md` was cut short by an `EOF` inside the example text. The remainder ran as shell and executed one read-only `kubectl get svc -A` against the local kube context (192.168.49.2), which timed out and was killed. No files changed. Markdown edits now go through the Edit tool, not shell heredocs.
+
+## 2026-11-09 — Items 2 + 1: row-pattern operator and scaling
+
+**What was built**
+- **`seq_match(ord, id, sym, pattern)`** (`src/seq.rs`) is a MATCH_RECOGNIZE-style aggregate. PARTITION BY becomes GROUP BY, DEFINE becomes a CASE expression that produces `sym`, and PATTERN is a regex over symbol names (`.` matches any row). It returns the ids of leftmost, non-overlapping matches. Its signature is `any(4)` and inputs are cast internally, so `row_number()` (UInt64) works directly.
+- The `step_symbols` view assigns one symbol per agent step: A > M > L > K by priority.
+- W7a asks "alerts → metrics → logs, gap ≤2 each". It has a 3-way self-join baseline and a `seq_match` version. `oracle/check.sh` asserts that every `X-baseline.golden` equals its operator sibling.
+- `tdb synth N <dir>` replicates every session N times. `scripts/scale.sh [N...]` times baseline vs. operator pairs (median of 3 runs).
+- `views.sql` loader: whole-line comments are stripped before splitting on `;`. This fixed a recurring footgun.
+- **Not built, and why.** `next_in` is not needed: "next X" is `LEAD` over a step-level view (`promql_steps`, `step_symbols`). T4b's three-join version came from working at call level. `replay(session, step)` would only be a parameterized view with no performance angle; it is deferred until wanted.
+
+**Numbers (W7a; identical results at every scale and gap)**
+| scale | baseline | seq_match |
+|---|---|---|
+| 1× (601 sessions) | 168 ms | 76 ms |
+| 10× | 394 ms | 223 ms |
+| 50× (30k sessions, 729k steps) | 1714 ms | 929 ms |
+
+**Where the time goes at 50×**
+- Process startup is 12 ms, the `step_symbols` view alone is 529 ms, and `seq_match` over about 60k partitions adds about 30 ms.
+- The baseline references the view 3 times, and **DataFusion recomputes it per reference (no common-subexpression reuse)**, giving about 3 × 529. So the about 1.8× win is "one scan vs. one scan per pattern element", not faster matching.
+- Gap size: the baseline is flat for gap ≤2/5/10 (1.69 / 1.74 / 1.75 s), because DataFusion hash-joins on (session, stage) and range-filters afterwards. `seq_match` grows (0.94 / 1.11 / 1.32 s) as the regex automaton grows. My hypothesis that "the baseline degrades with gap" was wrong.
+
+**Implications / next options**
+- Eager vs. lazy (paper C1): materializing `step_symbols` and `telemetry_calls` at ingest would remove about 529 ms per reference. That is likely a bigger win than any operator at this scale. The cheapest next experiment is to add these as ingest-time tables and re-run `scale.sh`.
+- C5 (order as a plan property): `seq_match` buffers and sorts each partition in `evaluate()`. Using the declared `(session_id, step_id)` sort order to stream would matter only once matching itself dominates, which it currently does not (30 ms).
