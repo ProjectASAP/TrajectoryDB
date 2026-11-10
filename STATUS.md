@@ -194,3 +194,14 @@ cd ../TrajectoryDB && cargo build --release
   `CREATE VIEW` for DataFusion and materializes exactly the declared set at ingest/synth; the `DERIVED` list in main.rs is gone.
 - Still no runtime `CREATE MATERIALIZED VIEW` via `tdb sql`, no `REFRESH`, no staleness check (missing file -> lazy view).
 - bench 0 non-PASS eager and lazy; 20 examples pass; oracle/check.sh passes.
+
+## W7b: unbounded run `M{3,} L` (seq_match vs gaps-and-islands)
+- Question: per (session, stage), matches of >=3 consecutive metric steps immediately followed by a logs step.
+  Diagnosis: 22/184 failed stages vs 17/341 passed contain it (12% vs 5%), consistent with the chain-length finding.
+- Baseline = gaps-and-islands (pos - row_number over M rows), HAVING count >= 3, join next row = L. 18 lines vs 12
+  for seq_match, but no recursion needed: runs of M are maximal, so leftmost non-overlapping = qualifying islands.
+  Recursion (sequential skip-past-last-row) is only forced when candidates overlap, e.g. `M .{0,3} L`; not built.
+- Timings (eager, median of 3): 1x 28 vs 30 ms, 10x 34 vs 51, 50x 80 vs 176 (baseline vs seq_match). Baseline still wins;
+  seq_match's cost is the per-group Accumulator path, as for W7a.
+- Gotcha: DataFusion 54 `cardinality(list<list>)` = outer len x first inner len (assumes rectangular). Use
+  array_length(flatten(m)) for #matched rows. W7a's `cardinality(m) > 0` is unaffected (0 iff empty).
