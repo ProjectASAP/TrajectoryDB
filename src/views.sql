@@ -94,3 +94,55 @@ SELECT st.session_id, st.stage, st.step_id,
   nullif(array_to_string(array_sort(p.metrics), ','), '') AS metric_key
 FROM steps st LEFT JOIN m USING (session_id, step_id) LEFT JOIN promql_steps p USING (session_id, step_id)
 WHERE st.source = 'agent';
+
+-- Capture views (holmesgpt-sregym extra.capture). Sessions without capture data have no rows; NULL means not measured.
+
+-- wall_time: per session and stage, the span from the first measured LLM/tool start to the last end, split into
+-- LLM calls, tool calls (parallel calls counted once) and other (agent code, approvals, waiting). Seconds, rounded to ms.
+-- llm_s + tool_s + other_s = wall_s when LLM and tool intervals don't overlap.
+CREATE VIEW wall_time AS
+WITH i AS (
+  SELECT session_id, stage, 'llm' AS part, start_unix_s AS s, end_unix_s AS e FROM steps WHERE start_unix_s IS NOT NULL
+  UNION ALL
+  SELECT t.session_id, st.stage, 'tool', t.start_unix_s, t.end_unix_s
+  FROM tool_calls t JOIN steps st USING (session_id, step_id) WHERE t.start_unix_s IS NOT NULL
+)
+SELECT session_id, stage, round(max(e) - min(s), 3) AS wall_s,
+  round(interval_union(s, e) FILTER (WHERE part = 'llm'), 3) AS llm_s,
+  round(interval_union(s, e) FILTER (WHERE part = 'tool'), 3) AS tool_s,
+  round(max(e) - min(s) - interval_union(s, e), 3) AS other_s,
+  count(*) FILTER (WHERE part = 'llm') AS llm_calls, count(*) FILTER (WHERE part = 'tool') AS tool_calls
+FROM i GROUP BY session_id, stage;
+
+-- input_composition: each LLM call's input by part (message role, or tool_schemas), in characters;
+-- items = messages, or tool definitions for tool_schemas.
+-- est_prompt_tok apportions the call's prompt tokens by character share: an estimate, since tokens per character vary.
+CREATE VIEW input_composition AS
+WITH p AS (
+  SELECT session_id, step_id, role AS part, count(*) AS items, sum(chars + coalesce(tool_call_chars, 0)) AS chars
+  FROM step_inputs GROUP BY session_id, step_id, role
+  UNION ALL
+  SELECT session_id, step_id, 'tool_schemas', tool_schema_count, tool_schema_chars FROM steps WHERE tool_schema_chars IS NOT NULL
+), t AS (
+  SELECT *, CAST(chars AS DOUBLE) / sum(chars) OVER (PARTITION BY session_id, step_id) AS share FROM p
+)
+SELECT t.session_id, t.step_id, st.stage, st.purpose, t.part, t.items, t.chars, t.share,
+  CAST(round(st.prompt_tok * t.share) AS BIGINT) AS est_prompt_tok
+FROM t JOIN steps st USING (session_id, step_id);
+
+-- compactions: agent LLM calls whose input lost messages the previous agent call (same session and stage) had,
+-- i.e. history was compacted or truncated. via_compaction: a purpose = 'compaction' call ran in between.
+CREATE VIEW compactions AS
+WITH a AS (
+  SELECT session_id, stage, step_id, lag(step_id) OVER (PARTITION BY session_id, stage ORDER BY step_id) AS prev_step_id
+  FROM steps WHERE purpose = 'agent' AND step_id IN (SELECT step_id FROM step_inputs i WHERE i.session_id = steps.session_id)
+), d AS (
+  SELECT a.session_id, a.stage, a.step_id, a.prev_step_id, p.chars + coalesce(p.tool_call_chars, 0) AS chars
+  FROM a JOIN step_inputs p ON p.session_id = a.session_id AND p.step_id = a.prev_step_id
+  LEFT JOIN step_inputs c ON c.session_id = a.session_id AND c.step_id = a.step_id AND c.sha = p.sha
+  WHERE c.sha IS NULL
+)
+SELECT d.session_id, d.stage, d.step_id, d.prev_step_id, count(*) AS dropped_messages, sum(d.chars) AS dropped_chars,
+  bool_or(c.step_id IS NOT NULL) AS via_compaction
+FROM d LEFT JOIN steps c ON c.session_id = d.session_id AND c.purpose = 'compaction' AND c.step_id > d.prev_step_id AND c.step_id < d.step_id
+GROUP BY d.session_id, d.stage, d.step_id, d.prev_step_id;
