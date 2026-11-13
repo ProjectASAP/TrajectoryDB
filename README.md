@@ -1,6 +1,6 @@
 # TrajectoryDB
 
-A SQL engine for agent trajectories, prototyping [TrajectoryDB (arXiv 2609.07782)](https://arxiv.org/abs/2609.07782) on Apache DataFusion (stock, unmodified). It loads ATIF traces into Parquet tables and adds functions for what plain SQL handles badly: parsing tool calls (PromQL, bash, kubectl), sequence patterns over steps, comparing runs, and LLM-labelled meaning.
+A database for analyzing agent trajectories, built on Apache DataFusion. It loads ATIF traces into Parquet tables and adds functions for what plain SQL handles badly: parsing tool calls (PromQL, bash, kubectl), sequence patterns over steps, comparing runs, and LLM-labelled meaning. Inspired by https://arxiv.org/abs/2609.07782.
 
 ## Quick start
 
