@@ -100,19 +100,26 @@ WHERE st.source = 'agent';
 -- wall_time: per session and stage, the span from the first measured LLM/tool start to the last end, split into
 -- LLM calls, tool calls (parallel calls counted once) and other (agent code, approvals, waiting). Seconds, rounded to ms.
 -- llm_s + tool_s + other_s = wall_s when LLM and tool intervals don't overlap.
+-- Only calls with both bounds count. timing_complete = false when capture_coverage lists a call of the stage
+-- without timing; its time is then missing from every part, not added to other_s.
 CREATE VIEW wall_time AS
 WITH i AS (
-  SELECT session_id, stage, 'llm' AS part, start_unix_s AS s, end_unix_s AS e FROM steps WHERE start_unix_s IS NOT NULL
+  SELECT session_id, stage, 'llm' AS part, start_unix_s AS s, end_unix_s AS e FROM steps
+  WHERE start_unix_s IS NOT NULL AND end_unix_s IS NOT NULL
   UNION ALL
   SELECT t.session_id, st.stage, 'tool', t.start_unix_s, t.end_unix_s
-  FROM tool_calls t JOIN steps st USING (session_id, step_id) WHERE t.start_unix_s IS NOT NULL
-)
+  FROM tool_calls t JOIN steps st USING (session_id, step_id) WHERE t.start_unix_s IS NOT NULL AND t.end_unix_s IS NOT NULL
+), m AS (
+  SELECT DISTINCT session_id, stage FROM capture_coverage WHERE kind IN ('missing_llm_timing', 'missing_tool_timing')
+), w AS (
 SELECT session_id, stage, round(max(e) - min(s), 3) AS wall_s,
   round(interval_union(s, e) FILTER (WHERE part = 'llm'), 3) AS llm_s,
   round(interval_union(s, e) FILTER (WHERE part = 'tool'), 3) AS tool_s,
   round(max(e) - min(s) - interval_union(s, e), 3) AS other_s,
   count(*) FILTER (WHERE part = 'llm') AS llm_calls, count(*) FILTER (WHERE part = 'tool') AS tool_calls
-FROM i GROUP BY session_id, stage;
+FROM i GROUP BY session_id, stage
+)
+SELECT w.*, m.stage IS NULL AS timing_complete FROM w LEFT JOIN m USING (session_id, stage);
 
 -- input_composition: each LLM call's input by part (message role, or tool_schemas), in characters;
 -- items = messages, or tool definitions for tool_schemas.
@@ -124,7 +131,7 @@ WITH p AS (
   UNION ALL
   SELECT session_id, step_id, 'tool_schemas', tool_schema_count, tool_schema_chars FROM steps WHERE tool_schema_chars IS NOT NULL
 ), t AS (
-  SELECT *, CAST(chars AS DOUBLE) / sum(chars) OVER (PARTITION BY session_id, step_id) AS share FROM p
+  SELECT *, CAST(chars AS DOUBLE) / nullif(sum(chars) OVER (PARTITION BY session_id, step_id), 0) AS share FROM p
 )
 SELECT t.session_id, t.step_id, st.stage, st.purpose, t.part, t.items, t.chars, t.share,
   CAST(round(st.prompt_tok * t.share) AS BIGINT) AS est_prompt_tok
@@ -141,8 +148,12 @@ WITH a AS (
   FROM a JOIN step_inputs p ON p.session_id = a.session_id AND p.step_id = a.prev_step_id
   LEFT JOIN step_inputs c ON c.session_id = a.session_id AND c.step_id = a.step_id AND c.sha = p.sha
   WHERE c.sha IS NULL
+), g AS (
+  SELECT session_id, stage, step_id, prev_step_id, count(*) AS dropped_messages, sum(chars) AS dropped_chars
+  FROM d GROUP BY session_id, stage, step_id, prev_step_id
 )
-SELECT d.session_id, d.stage, d.step_id, d.prev_step_id, count(*) AS dropped_messages, sum(d.chars) AS dropped_chars,
-  bool_or(c.step_id IS NOT NULL) AS via_compaction
-FROM d LEFT JOIN steps c ON c.session_id = d.session_id AND c.purpose = 'compaction' AND c.step_id > d.prev_step_id AND c.step_id < d.step_id
-GROUP BY d.session_id, d.stage, d.step_id, d.prev_step_id;
+-- grouped before joining compaction steps, so several compactions in between don't multiply the counts
+SELECT g.session_id, g.stage, g.step_id, g.prev_step_id, g.dropped_messages, g.dropped_chars, count(c.step_id) > 0 AS via_compaction
+FROM g LEFT JOIN steps c ON c.session_id = g.session_id AND c.stage = g.stage AND c.purpose = 'compaction'
+  AND c.step_id > g.prev_step_id AND c.step_id < g.step_id
+GROUP BY g.session_id, g.stage, g.step_id, g.prev_step_id, g.dropped_messages, g.dropped_chars;

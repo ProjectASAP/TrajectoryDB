@@ -496,17 +496,17 @@ These need capture data: holmesgpt-sregym's `extra.capture`, which is fixture se
 
 ### Where did the time go?
 
-`wall_time` splits each stage's wall-clock span into LLM calls, tool calls and other time. Parallel tool calls are counted once.
+`wall_time` splits each stage's wall-clock span into LLM calls, tool calls and other time. Parallel tool calls are counted once. A call with no recorded duration is left out of every part. `timing_complete` is false when `capture_coverage` lists such a call for the stage.
 
 ```sql
-SELECT session_id, stage, wall_s, llm_s, tool_s, other_s, llm_calls, tool_calls FROM wall_time ORDER BY 1, 2
+SELECT session_id, stage, wall_s, llm_s, tool_s, other_s, llm_calls, tool_calls, timing_complete FROM wall_time ORDER BY 1, 2
 ```
 ```text
-+------------+-----------+--------+-------+--------+---------+-----------+------------+
-| session_id | stage     | wall_s | llm_s | tool_s | other_s | llm_calls | tool_calls |
-+------------+-----------+--------+-------+--------+---------+-----------+------------+
-| s3         | diagnosis | 8.0    | 5.3   | 1.9    | 0.8     | 4         | 3          |
-+------------+-----------+--------+-------+--------+---------+-----------+------------+
++------------+-----------+--------+-------+--------+---------+-----------+------------+-----------------+
+| session_id | stage     | wall_s | llm_s | tool_s | other_s | llm_calls | tool_calls | timing_complete |
++------------+-----------+--------+-------+--------+---------+-----------+------------+-----------------+
+| s3         | diagnosis | 8.0    | 5.3   | 1.9    | 0.8     | 4         | 3          | true            |
++------------+-----------+--------+-------+--------+---------+-----------+------------+-----------------+
 ```
 
 ```sql

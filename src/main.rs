@@ -141,7 +141,7 @@ async fn ingest(root: &str) -> Res<()> {
             for (i, t) in st["tool_calls"].as_array().into_iter().flatten().enumerate() {
                 let (g, tc) = (&t["arguments"], &t["extra"]["capture"]);
                 // older exporter: the tool's elapsed time is on its result
-                let elapsed = results.iter().find(|r| r["source_call_id"] == t["tool_call_id"]).map_or(&Value::Null, |r| &r["extra"]["elapsed_seconds"]);
+                let elapsed = results.iter().find(|r| !t["tool_call_id"].is_null() && r["source_call_id"] == t["tool_call_id"]).map_or(&Value::Null, |r| &r["extra"]["elapsed_seconds"]);
                 writeln!(w[2], "{}", json!({"session_id": sid, "step_id": step, "call_idx": i, "call_id": t["tool_call_id"], "fn": t["function_name"],
                     "args": g.to_string(), "query": s(&g["query"]), "command": s(&g["command"]), "kind": s(&g["kind"]), "namespace": s(&g["namespace"]),
                     "start_unix_s": tc["start_unix_s"], "end_unix_s": tc["end_unix_s"], "duration_s": or(&tc["duration_s"], elapsed),
@@ -309,4 +309,57 @@ async fn synth(n: u32, out: &str) -> Res<()> {
     println!("wrote {n}x copy to {out}");
     unsafe { env::set_var("TDB_DB", out) };
     materialize().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The capture views over small in-memory tables; returns the query result as a pretty table.
+    async fn capture_view(tables: &str, query: &str) -> String {
+        let c = SessionContext::new();
+        c.register_udaf(interval::udaf());
+        run(&c, tables).await.unwrap();
+        for t in [STEPS, INPUTS, CALLS, COVERAGE] { // tables the test didn't fill are empty
+            let def = t.trim_end_matches(" AS VALUES").replacen("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1);
+            run(&c, &def).await.unwrap();
+        }
+        for (sql, _) in views().into_iter().filter(|v| ["wall_time", "input_composition", "compactions"].iter().any(|n| v.0.contains(&format!("CREATE VIEW {n} ")))) {
+            c.sql(&sql).await.unwrap();
+        }
+        pretty_format_batches(&run(&c, query).await.unwrap()).unwrap().to_string()
+    }
+
+    const STEPS: &str = "CREATE TABLE steps (session_id VARCHAR, stage VARCHAR, step_id BIGINT, purpose VARCHAR, start_unix_s DOUBLE, end_unix_s DOUBLE, prompt_tok BIGINT, tool_schema_chars BIGINT, tool_schema_count BIGINT) AS VALUES";
+    const INPUTS: &str = "CREATE TABLE step_inputs (session_id VARCHAR, step_id BIGINT, role VARCHAR, chars BIGINT, tool_call_chars BIGINT, sha VARCHAR) AS VALUES";
+    const CALLS: &str = "CREATE TABLE tool_calls (session_id VARCHAR, step_id BIGINT, start_unix_s DOUBLE, end_unix_s DOUBLE) AS VALUES";
+    const COVERAGE: &str = "CREATE TABLE capture_coverage (session_id VARCHAR, kind VARCHAR, stage VARCHAR, ref VARCHAR) AS VALUES";
+
+    #[tokio::test]
+    async fn compactions_count_each_dropped_message_once() {
+        // Two compaction calls between agent calls 1 and 4; call 4 drops b and c.
+        let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, 1, 10, 0, 0), ('s', 'd', 2, 'compaction', 1, 2, 10, 0, 0),
+            ('s', 'd', 3, 'compaction', 2, 3, 10, 0, 0), ('s', 'd', 4, 'agent', 3, 4, 10, 0, 0);
+            {INPUTS} ('s', 1, 'user', 5, NULL, 'a'), ('s', 1, 'tool', 7, NULL, 'b'), ('s', 1, 'tool', 9, NULL, 'c'),
+            ('s', 4, 'user', 5, NULL, 'a'), ('s', 4, 'assistant', 3, NULL, 'summary')");
+        let got = capture_view(&t, "SELECT step_id, prev_step_id, dropped_messages, dropped_chars, via_compaction FROM compactions").await;
+        assert!(got.contains("| 4       | 1            | 2                | 16            | true           |"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn wall_time_skips_calls_without_an_end_and_flags_the_stage() {
+        // Call 1 has a start but no duration (missing_llm_timing); it must not stretch the window into other_s.
+        let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, NULL, 10, 0, 0), ('s', 'd', 2, 'agent', 5, 7, 10, 0, 0);
+            {CALLS} ('s', 2, 7, 8);
+            {COVERAGE} ('s', 'missing_llm_timing', 'd', '1')");
+        let got = capture_view(&t, "SELECT wall_s, llm_s, tool_s, other_s, llm_calls, timing_complete FROM wall_time").await;
+        assert!(got.contains("| 3.0    | 2.0   | 1.0    | 0.0     | 1         | false           |"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn input_composition_share_is_null_for_an_empty_input() {
+        let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, 1, 10, 0, 0); {INPUTS} ('s', 1, 'user', 0, NULL, 'a')");
+        let got = capture_view(&t, "SELECT part, share, est_prompt_tok FROM input_composition ORDER BY part").await;
+        assert!(got.contains("| user         |       |                |"), "{got}");
+    }
 }
