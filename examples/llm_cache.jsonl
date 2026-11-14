@@ -1,1 +1,2 @@
 {"model": "claude-opus-5-5", "prompt": "Name the workload this diagnosis blames, in lowercase, nothing else: root cause: api crashloop", "response": "api"}
+{"model": "claude-opus-5-5", "prompt": "Name the workload this diagnosis blames, in lowercase, nothing else: root cause: payment service down", "response": "payment"}

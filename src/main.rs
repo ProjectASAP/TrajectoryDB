@@ -14,6 +14,7 @@ mod seq;
 mod align;
 mod llm;
 mod udf;
+mod interval;
 
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::*;
@@ -24,12 +25,20 @@ type Res<T> = Result<T, Box<dyn std::error::Error>>;
 fn db() -> String { env::var("TDB_DB").unwrap_or_else(|_| "db".into()) }
 
 /// table name -> (create-from-staging SQL column list, sort keys)
+// Capture columns (holmesgpt-sregym `extra.capture`, version CAPTURE_VERSION) are NULL for trajectories without it.
 const TABLES: &[(&str, &str, &[&str])] = &[
-    ("sessions", "session_id VARCHAR, trajectory_id VARCHAR, run VARCHAR, problem_id VARCHAR, application VARCHAR, agent VARCHAR, agent_version VARCHAR, model VARCHAR, n_steps BIGINT, prompt_tok BIGINT, completion_tok BIGINT, cached_tok BIGINT, capture_complete BOOLEAN", &["session_id"]),
-    ("steps", "session_id VARCHAR, step_id BIGINT, stage VARCHAR, source VARCHAR, ts VARCHAR, model VARCHAR, prompt_tok BIGINT, completion_tok BIGINT, cached_tok BIGINT, cache_write_tok BIGINT, duration_s DOUBLE, status VARCHAR, message VARCHAR", &["session_id", "step_id"]),
-    ("tool_calls", "session_id VARCHAR, step_id BIGINT, call_idx BIGINT, call_id VARCHAR, fn VARCHAR, args VARCHAR, query VARCHAR, command VARCHAR, kind VARCHAR, namespace VARCHAR", &["session_id", "step_id", "call_idx"]),
-    ("observations", "session_id VARCHAR, step_id BIGINT, obs_idx BIGINT, call_id VARCHAR, status VARCHAR, error VARCHAR, return_code BIGINT, elapsed_s DOUBLE, content VARCHAR", &["session_id", "step_id", "obs_idx"]),
+    ("sessions", "session_id VARCHAR, trajectory_id VARCHAR, run VARCHAR, problem_id VARCHAR, application VARCHAR, agent VARCHAR, agent_version VARCHAR, model VARCHAR, n_steps BIGINT, prompt_tok BIGINT, completion_tok BIGINT, cached_tok BIGINT, capture_complete BOOLEAN, capture_version BIGINT", &["session_id"]),
+    ("steps", "session_id VARCHAR, step_id BIGINT, stage VARCHAR, source VARCHAR, ts TIMESTAMP WITH TIME ZONE, model VARCHAR, prompt_tok BIGINT, completion_tok BIGINT, cached_tok BIGINT, cache_write_tok BIGINT, duration_s DOUBLE, status VARCHAR, message VARCHAR, purpose VARCHAR, start_unix_s DOUBLE, end_unix_s DOUBLE, tool_schema_chars BIGINT, tool_schema_count BIGINT", &["session_id", "step_id"]),
+    ("tool_calls", "session_id VARCHAR, step_id BIGINT, call_idx BIGINT, call_id VARCHAR, fn VARCHAR, args VARCHAR, query VARCHAR, command VARCHAR, kind VARCHAR, namespace VARCHAR, start_unix_s DOUBLE, end_unix_s DOUBLE, duration_s DOUBLE, thread_id BIGINT, toolset_name VARCHAR, status VARCHAR", &["session_id", "step_id", "call_idx"]),
+    ("observations", "session_id VARCHAR, step_id BIGINT, obs_idx BIGINT, call_id VARCHAR, status VARCHAR, error VARCHAR, return_code BIGINT, content VARCHAR, result_chars BIGINT, model_message_chars BIGINT, spilled BOOLEAN, original_result_chars BIGINT, original_message_tokens BIGINT, original_result VARCHAR", &["session_id", "step_id", "obs_idx"]),
+    ("messages", "session_id VARCHAR, sha VARCHAR, role VARCHAR, content VARCHAR, tool_calls VARCHAR", &["session_id", "sha"]),
+    ("step_inputs", "session_id VARCHAR, step_id BIGINT, idx BIGINT, role VARCHAR, name VARCHAR, tool_call_id VARCHAR, chars BIGINT, tool_call_chars BIGINT, sha VARCHAR", &["session_id", "step_id", "idx"]),
+    ("capture_coverage", "session_id VARCHAR, kind VARCHAR, stage VARCHAR, ref VARCHAR", &["session_id", "kind", "stage", "ref"]),
 ];
+
+const CAPTURE_VERSION: u64 = 1;
+/// HolmesGPT's replacement texts for a trimmed tool result; how spills are found in trajectories without capture data.
+const SPILL_MARKERS: &[&str] = &["The tool call result is too large to return", "Image too large to display inline"];
 
 /// A views.sql statement as plain DataFusion SQL, plus (name, sort keys) if it was declared
 /// `CREATE MATERIALIZED VIEW name ORDER BY (k, ...) AS q` (DataFusion has no such statement; we rewrite it).
@@ -70,6 +79,9 @@ fn s(v: &Value) -> Value {
     match v { Value::Null | Value::String(_) => v.clone(), o => Value::String(o.to_string()) }
 }
 
+/// `a`, or `b` when `a` is missing.
+fn or<'a>(a: &'a Value, b: &'a Value) -> &'a Value { if a.is_null() { b } else { a } }
+
 fn files(dir: &Path, name: &str, out: &mut Vec<std::path::PathBuf>) -> Res<()> {
     for e in fs::read_dir(dir)? {
         let p = e?.path();
@@ -92,33 +104,69 @@ async fn ingest(root: &str) -> Res<()> {
         let sid = &d["session_id"];
         let fm = &d["final_metrics"];
         let sg = &d["extra"]["sregym"];
+        let cap = &d["extra"]["capture"];
+        if !cap.is_null() && cap["version"].as_u64() != Some(CAPTURE_VERSION) {
+            return Err(format!("{}: unsupported extra.capture version {}", p.display(), cap["version"]).into());
+        }
         // run = first path component under root (e.g. run-01)
         let run = p.strip_prefix(root)?.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned());
         writeln!(w[0], "{}", json!({"session_id": sid, "trajectory_id": d["trajectory_id"], "run": run, "problem_id": sg["problem_id"],
             "application": sg["application"], "agent": d["agent"]["name"], "agent_version": d["agent"]["version"], "model": d["agent"]["model_name"],
             "n_steps": d["steps"].as_array().map(|x| x.len()), "prompt_tok": fm["total_prompt_tokens"], "completion_tok": fm["total_completion_tokens"],
-            "cached_tok": fm["total_cached_tokens"], "capture_complete": fm["extra"]["capture_complete"]}))?;
+            "cached_tok": fm["total_cached_tokens"], "capture_version": cap["version"],
+            // older exporter: final_metrics.extra; holmesgpt-sregym runtime.convert: trajectory extra
+            "capture_complete": or(&fm["extra"]["capture_complete"], &d["extra"]["capture_complete"])}))?;
+        for (sha, m) in cap["messages"].as_object().into_iter().flatten() {
+            writeln!(w[4], "{}", json!({"session_id": sid, "sha": sha, "role": m["role"], "content": s(&m["content"]),
+                "tool_calls": m.get("tool_calls").filter(|v| !v.is_null()).map(|v| v.to_string())}))?;
+        }
+        for c in cap["coverage"].as_array().into_iter().flatten() {
+            // "kind:stage:ref", e.g. missing_tool_timing:diagnosis:call_1
+            let mut it = c.as_str().unwrap_or_default().splitn(3, ':');
+            writeln!(w[6], "{}", json!({"session_id": sid, "kind": it.next(), "stage": it.next(), "ref": it.next()}))?;
+        }
         for st in d["steps"].as_array().into_iter().flatten() {
             let (step, m, x) = (&st["step_id"], &st["metrics"], &st["extra"]);
+            let sc = &x["capture"];
             writeln!(w[1], "{}", json!({"session_id": sid, "step_id": step, "stage": x["stage"], "source": st["source"], "ts": st["timestamp"],
                 "model": st["model_name"], "prompt_tok": m["prompt_tokens"], "completion_tok": m["completion_tokens"], "cached_tok": m["cached_tokens"],
-                "cache_write_tok": m["extra"]["cache_write_tokens"], "duration_s": x["duration_s"], "status": x["status"], "message": s(&st["message"])}))?;
-            for (i, t) in st["tool_calls"].as_array().into_iter().flatten().enumerate() {
-                let g = &t["arguments"];
-                writeln!(w[2], "{}", json!({"session_id": sid, "step_id": step, "call_idx": i, "call_id": t["tool_call_id"], "fn": t["function_name"],
-                    "args": g.to_string(), "query": s(&g["query"]), "command": s(&g["command"]), "kind": s(&g["kind"]), "namespace": s(&g["namespace"])}))?;
+                "cache_write_tok": m["extra"]["cache_write_tokens"], "duration_s": or(&sc["duration_s"], &x["duration_s"]), "status": x["status"],
+                "message": s(&st["message"]), "purpose": x["purpose"], "start_unix_s": sc["start_unix_s"], "end_unix_s": sc["end_unix_s"],
+                "tool_schema_chars": sc["tool_schema_chars"], "tool_schema_count": sc["tool_schema_count"]}))?;
+            for (i, e) in sc["input_messages"].as_array().into_iter().flatten().enumerate() {
+                writeln!(w[5], "{}", json!({"session_id": sid, "step_id": step, "idx": i, "role": e["role"], "name": e["name"],
+                    "tool_call_id": e["tool_call_id"], "chars": e["chars"], "tool_call_chars": e["tool_call_chars"], "sha": e["sha"]}))?;
             }
-            for (i, r) in st["observation"]["results"].as_array().into_iter().flatten().enumerate() {
-                let e = &r["extra"];
+            let results = st["observation"]["results"].as_array().map(Vec::as_slice).unwrap_or_default();
+            for (i, t) in st["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                let (g, tc) = (&t["arguments"], &t["extra"]["capture"]);
+                // older exporter: the tool's elapsed time is on its result
+                let elapsed = results.iter().find(|r| !t["tool_call_id"].is_null() && r["source_call_id"] == t["tool_call_id"]).map_or(&Value::Null, |r| &r["extra"]["elapsed_seconds"]);
+                writeln!(w[2], "{}", json!({"session_id": sid, "step_id": step, "call_idx": i, "call_id": t["tool_call_id"], "fn": t["function_name"],
+                    "args": g.to_string(), "query": s(&g["query"]), "command": s(&g["command"]), "kind": s(&g["kind"]), "namespace": s(&g["namespace"]),
+                    "start_unix_s": tc["start_unix_s"], "end_unix_s": tc["end_unix_s"], "duration_s": or(&tc["duration_s"], elapsed),
+                    "thread_id": tc["thread_id"], "toolset_name": tc["toolset_name"], "status": tc["status"]}))?;
+            }
+            for (i, r) in results.iter().enumerate() {
+                let (e, oc) = (&r["extra"], &r["extra"]["capture"]);
+                let spilled = if oc["spilled"].is_null() {
+                    let (c, err) = (s(&r["content"]), s(&e["error"]));
+                    let has = |v: &Value, k: &str| v.as_str().is_some_and(|t| t.contains(k));
+                    json!(SPILL_MARKERS.iter().any(|k| has(&c, k) || has(&err, k)))
+                } else { oc["spilled"].clone() };
                 writeln!(w[3], "{}", json!({"session_id": sid, "step_id": step, "obs_idx": i, "call_id": r["source_call_id"], "status": e["status"],
-                    "error": s(&e["error"]), "return_code": e["return_code"], "elapsed_s": e["elapsed_seconds"], "content": s(&r["content"])}))?;
+                    "error": s(&e["error"]), "return_code": e["return_code"], "content": s(&r["content"]),
+                    "result_chars": oc["result_chars"], "model_message_chars": oc["model_message_chars"], "spilled": spilled,
+                    "original_result_chars": oc["original_result_chars"], "original_message_tokens": oc["original_message_tokens"],
+                    "original_result": s(&oc["original_result"])}))?;
             }
         }
     }
     for x in &mut w { x.flush()? }
     drop(w);
 
-    let c = SessionContext::new();
+    // UTC session time zone, so `TIMESTAMP WITH TIME ZONE` columns keep it (ATIF timestamps are UTC ISO 8601)
+    let c = SessionContext::new_with_config(SessionConfig::new().set_str("datafusion.execution.time_zone", "+00:00"));
     for (name, cols, _) in TABLES {
         let f = stage.join(format!("{name}.json"));
         c.sql(&format!("CREATE EXTERNAL TABLE stg_{name} ({cols}) STORED AS JSON LOCATION '{}'", f.display())).await?;
@@ -180,6 +228,7 @@ async fn ctx_mode(lazy: bool) -> Res<SessionContext> {
     align::register(&c);
     llm::register(&c);
     c.register_udaf(seq::udaf());
+    c.register_udaf(interval::udaf());
     for (sql, _) in views() {
         c.sql(&sql).await?;
     }
@@ -260,4 +309,57 @@ async fn synth(n: u32, out: &str) -> Res<()> {
     println!("wrote {n}x copy to {out}");
     unsafe { env::set_var("TDB_DB", out) };
     materialize().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The capture views over small in-memory tables; returns the query result as a pretty table.
+    async fn capture_view(tables: &str, query: &str) -> String {
+        let c = SessionContext::new();
+        c.register_udaf(interval::udaf());
+        run(&c, tables).await.unwrap();
+        for t in [STEPS, INPUTS, CALLS, COVERAGE] { // tables the test didn't fill are empty
+            let def = t.trim_end_matches(" AS VALUES").replacen("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1);
+            run(&c, &def).await.unwrap();
+        }
+        for (sql, _) in views().into_iter().filter(|v| ["wall_time", "input_composition", "compactions"].iter().any(|n| v.0.contains(&format!("CREATE VIEW {n} ")))) {
+            c.sql(&sql).await.unwrap();
+        }
+        pretty_format_batches(&run(&c, query).await.unwrap()).unwrap().to_string()
+    }
+
+    const STEPS: &str = "CREATE TABLE steps (session_id VARCHAR, stage VARCHAR, step_id BIGINT, purpose VARCHAR, start_unix_s DOUBLE, end_unix_s DOUBLE, prompt_tok BIGINT, tool_schema_chars BIGINT, tool_schema_count BIGINT) AS VALUES";
+    const INPUTS: &str = "CREATE TABLE step_inputs (session_id VARCHAR, step_id BIGINT, role VARCHAR, chars BIGINT, tool_call_chars BIGINT, sha VARCHAR) AS VALUES";
+    const CALLS: &str = "CREATE TABLE tool_calls (session_id VARCHAR, step_id BIGINT, start_unix_s DOUBLE, end_unix_s DOUBLE) AS VALUES";
+    const COVERAGE: &str = "CREATE TABLE capture_coverage (session_id VARCHAR, kind VARCHAR, stage VARCHAR, ref VARCHAR) AS VALUES";
+
+    #[tokio::test]
+    async fn compactions_count_each_dropped_message_once() {
+        // Two compaction calls between agent calls 1 and 4; call 4 drops b and c.
+        let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, 1, 10, 0, 0), ('s', 'd', 2, 'compaction', 1, 2, 10, 0, 0),
+            ('s', 'd', 3, 'compaction', 2, 3, 10, 0, 0), ('s', 'd', 4, 'agent', 3, 4, 10, 0, 0);
+            {INPUTS} ('s', 1, 'user', 5, NULL, 'a'), ('s', 1, 'tool', 7, NULL, 'b'), ('s', 1, 'tool', 9, NULL, 'c'),
+            ('s', 4, 'user', 5, NULL, 'a'), ('s', 4, 'assistant', 3, NULL, 'summary')");
+        let got = capture_view(&t, "SELECT step_id, prev_step_id, dropped_messages, dropped_chars, via_compaction FROM compactions").await;
+        assert!(got.contains("| 4       | 1            | 2                | 16            | true           |"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn wall_time_skips_calls_without_an_end_and_flags_the_stage() {
+        // Call 1 has a start but no duration (missing_llm_timing); it must not stretch the window into other_s.
+        let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, NULL, 10, 0, 0), ('s', 'd', 2, 'agent', 5, 7, 10, 0, 0);
+            {CALLS} ('s', 2, 7, 8);
+            {COVERAGE} ('s', 'missing_llm_timing', 'd', '1')");
+        let got = capture_view(&t, "SELECT wall_s, llm_s, tool_s, other_s, llm_calls, timing_complete FROM wall_time").await;
+        assert!(got.contains("| 3.0    | 2.0   | 1.0    | 0.0     | 1         | false           |"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn input_composition_share_is_null_for_an_empty_input() {
+        let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, 1, 10, 0, 0); {INPUTS} ('s', 1, 'user', 0, NULL, 'a')");
+        let got = capture_view(&t, "SELECT part, share, est_prompt_tok FROM input_composition ORDER BY part").await;
+        assert!(got.contains("| user         |       |                |"), "{got}");
+    }
 }
