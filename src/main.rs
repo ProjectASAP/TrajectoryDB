@@ -101,66 +101,9 @@ async fn ingest(root: &str) -> Res<()> {
     paths.sort();
     for p in &paths {
         let d: Value = serde_json::from_slice(&fs::read(p)?)?;
-        let sid = &d["session_id"];
-        let fm = &d["final_metrics"];
-        let sg = &d["extra"]["sregym"];
-        let cap = &d["extra"]["capture"];
-        if !cap.is_null() && cap["version"].as_u64() != Some(CAPTURE_VERSION) {
-            return Err(format!("{}: unsupported extra.capture version {}", p.display(), cap["version"]).into());
-        }
         // run = first path component under root (e.g. run-01)
         let run = p.strip_prefix(root)?.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned());
-        writeln!(w[0], "{}", json!({"session_id": sid, "trajectory_id": d["trajectory_id"], "run": run, "problem_id": sg["problem_id"],
-            "application": sg["application"], "agent": d["agent"]["name"], "agent_version": d["agent"]["version"], "model": d["agent"]["model_name"],
-            "n_steps": d["steps"].as_array().map(|x| x.len()), "prompt_tok": fm["total_prompt_tokens"], "completion_tok": fm["total_completion_tokens"],
-            "cached_tok": fm["total_cached_tokens"], "capture_version": cap["version"],
-            // older exporter: final_metrics.extra; holmesgpt-sregym runtime.convert: trajectory extra
-            "capture_complete": or(&fm["extra"]["capture_complete"], &d["extra"]["capture_complete"])}))?;
-        for (sha, m) in cap["messages"].as_object().into_iter().flatten() {
-            writeln!(w[4], "{}", json!({"session_id": sid, "sha": sha, "role": m["role"], "content": s(&m["content"]),
-                "tool_calls": m.get("tool_calls").filter(|v| !v.is_null()).map(|v| v.to_string())}))?;
-        }
-        for c in cap["coverage"].as_array().into_iter().flatten() {
-            // "kind:stage:ref", e.g. missing_tool_timing:diagnosis:call_1
-            let mut it = c.as_str().unwrap_or_default().splitn(3, ':');
-            writeln!(w[6], "{}", json!({"session_id": sid, "kind": it.next(), "stage": it.next(), "ref": it.next()}))?;
-        }
-        for st in d["steps"].as_array().into_iter().flatten() {
-            let (step, m, x) = (&st["step_id"], &st["metrics"], &st["extra"]);
-            let sc = &x["capture"];
-            writeln!(w[1], "{}", json!({"session_id": sid, "step_id": step, "stage": x["stage"], "source": st["source"], "ts": st["timestamp"],
-                "model": st["model_name"], "prompt_tok": m["prompt_tokens"], "completion_tok": m["completion_tokens"], "cached_tok": m["cached_tokens"],
-                "cache_write_tok": m["extra"]["cache_write_tokens"], "duration_s": or(&sc["duration_s"], &x["duration_s"]), "status": x["status"],
-                "message": s(&st["message"]), "purpose": x["purpose"], "start_unix_s": sc["start_unix_s"], "end_unix_s": sc["end_unix_s"],
-                "tool_schema_chars": sc["tool_schema_chars"], "tool_schema_count": sc["tool_schema_count"]}))?;
-            for (i, e) in sc["input_messages"].as_array().into_iter().flatten().enumerate() {
-                writeln!(w[5], "{}", json!({"session_id": sid, "step_id": step, "idx": i, "role": e["role"], "name": e["name"],
-                    "tool_call_id": e["tool_call_id"], "chars": e["chars"], "tool_call_chars": e["tool_call_chars"], "sha": e["sha"]}))?;
-            }
-            let results = st["observation"]["results"].as_array().map(Vec::as_slice).unwrap_or_default();
-            for (i, t) in st["tool_calls"].as_array().into_iter().flatten().enumerate() {
-                let (g, tc) = (&t["arguments"], &t["extra"]["capture"]);
-                // older exporter: the tool's elapsed time is on its result
-                let elapsed = results.iter().find(|r| !t["tool_call_id"].is_null() && r["source_call_id"] == t["tool_call_id"]).map_or(&Value::Null, |r| &r["extra"]["elapsed_seconds"]);
-                writeln!(w[2], "{}", json!({"session_id": sid, "step_id": step, "call_idx": i, "call_id": t["tool_call_id"], "fn": t["function_name"],
-                    "args": g.to_string(), "query": s(&g["query"]), "command": s(&g["command"]), "kind": s(&g["kind"]), "namespace": s(&g["namespace"]),
-                    "start_unix_s": tc["start_unix_s"], "end_unix_s": tc["end_unix_s"], "duration_s": or(&tc["duration_s"], elapsed),
-                    "thread_id": tc["thread_id"], "toolset_name": tc["toolset_name"], "status": tc["status"]}))?;
-            }
-            for (i, r) in results.iter().enumerate() {
-                let (e, oc) = (&r["extra"], &r["extra"]["capture"]);
-                let spilled = if oc["spilled"].is_null() {
-                    let (c, err) = (s(&r["content"]), s(&e["error"]));
-                    let has = |v: &Value, k: &str| v.as_str().is_some_and(|t| t.contains(k));
-                    json!(SPILL_MARKERS.iter().any(|k| has(&c, k) || has(&err, k)))
-                } else { oc["spilled"].clone() };
-                writeln!(w[3], "{}", json!({"session_id": sid, "step_id": step, "obs_idx": i, "call_id": r["source_call_id"], "status": e["status"],
-                    "error": s(&e["error"]), "return_code": e["return_code"], "content": s(&r["content"]),
-                    "result_chars": oc["result_chars"], "model_message_chars": oc["model_message_chars"], "spilled": spilled,
-                    "original_result_chars": oc["original_result_chars"], "original_message_tokens": oc["original_message_tokens"],
-                    "original_result": s(&oc["original_result"])}))?;
-            }
-        }
+        flatten(p, run, &d, &mut w)?;
     }
     for x in &mut w { x.flush()? }
     drop(w);
@@ -190,6 +133,73 @@ async fn ingest(root: &str) -> Res<()> {
     }
     fs::remove_dir_all(&stage)?;
     materialize().await
+}
+
+/// One trajectory's rows, one JSON line per row, into the per-table writers (in TABLES order).
+/// Old-format fields are used only when the object's `extra.capture` is absent: inside capture data, NULL means not measured.
+fn flatten<W: Write>(p: &Path, run: Option<String>, d: &Value, w: &mut [W]) -> Res<()> {
+    let sid = &d["session_id"];
+    let fm = &d["final_metrics"];
+    let sg = &d["extra"]["sregym"];
+    let cap = &d["extra"]["capture"];
+    if !cap.is_null() && cap["version"].as_u64() != Some(CAPTURE_VERSION) {
+        return Err(format!("{}: unsupported extra.capture version {}", p.display(), cap["version"]).into());
+    }
+    writeln!(w[0], "{}", json!({"session_id": sid, "trajectory_id": d["trajectory_id"], "run": run, "problem_id": sg["problem_id"],
+        "application": sg["application"], "agent": d["agent"]["name"], "agent_version": d["agent"]["version"], "model": d["agent"]["model_name"],
+        "n_steps": d["steps"].as_array().map(|x| x.len()), "prompt_tok": fm["total_prompt_tokens"], "completion_tok": fm["total_completion_tokens"],
+        "cached_tok": fm["total_cached_tokens"], "capture_version": cap["version"],
+        // older exporter: final_metrics.extra; holmesgpt-sregym runtime.convert: trajectory extra
+        "capture_complete": or(&fm["extra"]["capture_complete"], &d["extra"]["capture_complete"])}))?;
+    for (sha, m) in cap["messages"].as_object().into_iter().flatten() {
+        writeln!(w[4], "{}", json!({"session_id": sid, "sha": sha, "role": m["role"], "content": s(&m["content"]),
+            "tool_calls": m.get("tool_calls").filter(|v| !v.is_null()).map(|v| v.to_string())}))?;
+    }
+    for c in cap["coverage"].as_array().into_iter().flatten() {
+        // "kind:stage:ref", e.g. missing_tool_timing:diagnosis:call_1
+        let mut it = c.as_str().unwrap_or_default().splitn(3, ':');
+        writeln!(w[6], "{}", json!({"session_id": sid, "kind": it.next(), "stage": it.next(), "ref": it.next()}))?;
+    }
+    for st in d["steps"].as_array().into_iter().flatten() {
+        let (step, m, x) = (&st["step_id"], &st["metrics"], &st["extra"]);
+        let sc = &x["capture"];
+        writeln!(w[1], "{}", json!({"session_id": sid, "step_id": step, "stage": x["stage"], "source": st["source"], "ts": st["timestamp"],
+            "model": st["model_name"], "prompt_tok": m["prompt_tokens"], "completion_tok": m["completion_tokens"], "cached_tok": m["cached_tokens"],
+            "cache_write_tok": m["extra"]["cache_write_tokens"], "duration_s": if sc.is_null() { &x["duration_s"] } else { &sc["duration_s"] }, "status": x["status"],
+            "message": s(&st["message"]), "purpose": x["purpose"], "start_unix_s": sc["start_unix_s"], "end_unix_s": sc["end_unix_s"],
+            "tool_schema_chars": sc["tool_schema_chars"], "tool_schema_count": sc["tool_schema_count"]}))?;
+        for (i, e) in sc["input_messages"].as_array().into_iter().flatten().enumerate() {
+            writeln!(w[5], "{}", json!({"session_id": sid, "step_id": step, "idx": i, "role": e["role"], "name": e["name"],
+                "tool_call_id": e["tool_call_id"], "chars": e["chars"], "tool_call_chars": e["tool_call_chars"], "sha": e["sha"]}))?;
+        }
+        let results = st["observation"]["results"].as_array().map(Vec::as_slice).unwrap_or_default();
+        for (i, t) in st["tool_calls"].as_array().into_iter().flatten().enumerate() {
+            let (g, tc) = (&t["arguments"], &t["extra"]["capture"]);
+            let duration = if tc.is_null() {
+                // older exporter: the tool's elapsed time is on its result
+                results.iter().find(|r| !t["tool_call_id"].is_null() && r["source_call_id"] == t["tool_call_id"])
+                    .map_or(&Value::Null, |r| &r["extra"]["elapsed_seconds"])
+            } else { &tc["duration_s"] };
+            writeln!(w[2], "{}", json!({"session_id": sid, "step_id": step, "call_idx": i, "call_id": t["tool_call_id"], "fn": t["function_name"],
+                "args": g.to_string(), "query": s(&g["query"]), "command": s(&g["command"]), "kind": s(&g["kind"]), "namespace": s(&g["namespace"]),
+                "start_unix_s": tc["start_unix_s"], "end_unix_s": tc["end_unix_s"], "duration_s": duration,
+                "thread_id": tc["thread_id"], "toolset_name": tc["toolset_name"], "status": tc["status"]}))?;
+        }
+        for (i, r) in results.iter().enumerate() {
+            let (e, oc) = (&r["extra"], &r["extra"]["capture"]);
+            let spilled = if oc.is_null() {
+                let (c, err) = (s(&r["content"]), s(&e["error"]));
+                let has = |v: &Value, k: &str| v.as_str().is_some_and(|t| t.contains(k));
+                json!(SPILL_MARKERS.iter().any(|k| has(&c, k) || has(&err, k)))
+            } else { oc["spilled"].clone() };
+            writeln!(w[3], "{}", json!({"session_id": sid, "step_id": step, "obs_idx": i, "call_id": r["source_call_id"], "status": e["status"],
+                "error": s(&e["error"]), "return_code": e["return_code"], "content": s(&r["content"]),
+                "result_chars": oc["result_chars"], "model_message_chars": oc["model_message_chars"], "spilled": spilled,
+                "original_result_chars": oc["original_result_chars"], "original_message_tokens": oc["original_message_tokens"],
+                "original_result": s(&oc["original_result"])}))?;
+        }
+    }
+    Ok(())
 }
 
 /// Write each materialized view, evaluated lazily over the base tables, to <db>/<view>.parquet.
@@ -320,7 +330,7 @@ mod tests {
         let c = SessionContext::new();
         c.register_udaf(interval::udaf());
         run(&c, tables).await.unwrap();
-        for t in [STEPS, INPUTS, CALLS, COVERAGE] { // tables the test didn't fill are empty
+        for t in [STEPS, INPUTS, CALLS, COVERAGE, SESSIONS] { // tables the test didn't fill are empty
             let def = t.trim_end_matches(" AS VALUES").replacen("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1);
             run(&c, &def).await.unwrap();
         }
@@ -334,6 +344,7 @@ mod tests {
     const INPUTS: &str = "CREATE TABLE step_inputs (session_id VARCHAR, step_id BIGINT, role VARCHAR, chars BIGINT, tool_call_chars BIGINT, sha VARCHAR) AS VALUES";
     const CALLS: &str = "CREATE TABLE tool_calls (session_id VARCHAR, step_id BIGINT, start_unix_s DOUBLE, end_unix_s DOUBLE) AS VALUES";
     const COVERAGE: &str = "CREATE TABLE capture_coverage (session_id VARCHAR, kind VARCHAR, stage VARCHAR, ref VARCHAR) AS VALUES";
+    const SESSIONS: &str = "CREATE TABLE sessions (session_id VARCHAR, capture_version BIGINT) AS VALUES";
 
     #[tokio::test]
     async fn compactions_count_each_dropped_message_once() {
@@ -351,9 +362,54 @@ mod tests {
         // Call 1 has a start but no duration (missing_llm_timing); it must not stretch the window into other_s.
         let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, NULL, 10, 0, 0), ('s', 'd', 2, 'agent', 5, 7, 10, 0, 0);
             {CALLS} ('s', 2, 7, 8);
-            {COVERAGE} ('s', 'missing_llm_timing', 'd', '1')");
+            {COVERAGE} ('s', 'missing_llm_timing', 'd', '1'); {SESSIONS} ('s', 1)");
         let got = capture_view(&t, "SELECT wall_s, llm_s, tool_s, other_s, llm_calls, timing_complete FROM wall_time").await;
         assert!(got.contains("| 3.0    | 2.0   | 1.0    | 0.0     | 1         | false           |"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn compactions_include_history_after_the_previous_call() {
+        // s3's shape: call 3 (a1 t1 t2) answered with a2 and got t3; the compaction call's input carries them, plus its
+        // own instruction (sys2), which is not history. Call 5 keeps s and u and adds a summary: 5 messages dropped.
+        let t = format!("{STEPS} ('s', 'd', 3, 'agent', 0, 1, 10, 0, 0), ('s', 'd', 4, 'compaction', 1, 2, 10, 0, 0), ('s', 'd', 5, 'agent', 2, 3, 10, 0, 0);
+            {INPUTS} ('s', 3, 'system', 1, NULL, 's'), ('s', 3, 'user', 1, NULL, 'u'), ('s', 3, 'assistant', 1, 10, 'a1'),
+              ('s', 3, 'tool', 10, NULL, 't1'), ('s', 3, 'tool', 10, NULL, 't2'),
+              ('s', 4, 'system', 1, NULL, 'sys2'), ('s', 4, 'user', 1, NULL, 'u'), ('s', 4, 'assistant', 1, 10, 'a1'),
+              ('s', 4, 'tool', 10, NULL, 't1'), ('s', 4, 'tool', 10, NULL, 't2'), ('s', 4, 'assistant', 1, 10, 'a2'), ('s', 4, 'tool', 10, NULL, 't3'),
+              ('s', 5, 'system', 1, NULL, 's'), ('s', 5, 'user', 1, NULL, 'u'), ('s', 5, 'assistant', 4, NULL, 'summary')");
+        let got = capture_view(&t, "SELECT step_id, prev_step_id, dropped_messages, dropped_chars, via_compaction FROM compactions").await;
+        assert!(got.contains("| 5       | 3            | 5                | 52            | true           |"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn wall_time_keeps_untimed_stages_and_stageless_coverage() {
+        // Stage m has no timed call: still a row, flagged. Stage d's only gap is a coverage entry without a stage.
+        let t = format!("{STEPS} ('s', 'd', 1, 'agent', 0, 1, 10, 0, 0), ('s', 'm', 2, 'agent', NULL, NULL, 10, 0, 0);
+            {COVERAGE} ('s', 'missing_tool_timing', NULL, 'c1'); {SESSIONS} ('s', 1)");
+        let got = capture_view(&t, "SELECT stage, wall_s, llm_calls, timing_complete FROM wall_time ORDER BY stage").await;
+        assert!(got.contains("| d     | 1.0    | 1         | false           |"), "{got}");
+        assert!(got.contains("| m     |        | 0         | false           |"), "{got}");
+    }
+
+    /// One trajectory through `flatten`; returns each table's rows.
+    fn flat(d: Value) -> Vec<Vec<Value>> {
+        let mut w: Vec<Vec<u8>> = vec![vec![]; TABLES.len()];
+        flatten(Path::new("t.json"), None, &d, &mut w).unwrap();
+        w.iter().map(|b| String::from_utf8_lossy(b).lines().map(|l| serde_json::from_str(l).unwrap()).collect()).collect()
+    }
+
+    #[test]
+    fn old_fields_fill_only_trajectories_without_capture() {
+        let spill = "The tool call result is too large to return: 9000/4000 tokens.";
+        let step = |capture: Value| json!({"step_id": 1, "extra": {"duration_s": 9.0, "capture": capture},
+            "tool_calls": [{"tool_call_id": "c", "function_name": "f", "arguments": {}, "extra": {"capture": capture}}],
+            "observation": {"results": [{"source_call_id": "c", "content": spill, "extra": {"elapsed_seconds": 9.0, "capture": capture}}]}});
+        // capture present, nothing measured: stays NULL rather than taking the old fields
+        let t = flat(json!({"session_id": "s", "steps": [step(json!({"start_unix_s": 1.0}))], "extra": {"capture": {"version": 1}}}));
+        assert_eq!((&t[1][0]["duration_s"], &t[2][0]["duration_s"], &t[3][0]["spilled"]), (&Value::Null, &Value::Null, &Value::Null));
+        // no capture: old fields
+        let t = flat(json!({"session_id": "s", "steps": [step(Value::Null)]}));
+        assert_eq!((&t[1][0]["duration_s"], &t[2][0]["duration_s"], &t[3][0]["spilled"]), (&json!(9.0), &json!(9.0), &json!(true)));
     }
 
     #[tokio::test]

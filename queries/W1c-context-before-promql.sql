@@ -8,6 +8,7 @@ cum AS (
     coalesce(sum(coalesce(ob.b, 0)) OVER (PARTITION BY st.session_id ORDER BY st.step_id
                                           ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS prior_result_bytes
   FROM steps st LEFT JOIN ob USING (session_id, step_id)
+  WHERE coalesce(st.purpose, '') <> 'compaction' -- compaction LLM calls are not steps of the walk
 )
 SELECT m.stage, count(*) AS promql_calls,
   round(avg(c.prior_steps), 1) AS avg_prior_steps,

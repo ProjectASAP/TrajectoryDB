@@ -383,7 +383,7 @@ FROM step_symbols GROUP BY 1, 2 ORDER BY 1, 2
 | s1         | diagnosis  | [A, M, K, _] | [[3, 4]] | [[4, 5]] |
 | s1         | mitigation | [_, M, M, M] | []       | []       |
 | s2         | diagnosis  | [M, M]       | []       | []       |
-| s3         | diagnosis  | [M, M, _, _] | []       | []       |
+| s3         | diagnosis  | [M, M, _]    | []       | []       |
 +------------+------------+--------------+----------+----------+
 ```
 
@@ -496,7 +496,7 @@ These need capture data: holmesgpt-sregym's `extra.capture`, which is fixture se
 
 ### Where did the time go?
 
-`wall_time` splits each stage's wall-clock span into LLM calls, tool calls and other time. Parallel tool calls are counted once. A call with no recorded duration is left out of every part. `timing_complete` is false when `capture_coverage` lists such a call for the stage.
+`wall_time` splits each stage's wall-clock span into LLM calls, tool calls and other time. Parallel tool calls are counted once. A call with no recorded duration is left out of every part. `timing_complete` is false when `capture_coverage` lists such a call for the stage. A stage with no timed call at all still gets a row, with NULL times.
 
 ```sql
 SELECT session_id, stage, wall_s, llm_s, tool_s, other_s, llm_calls, tool_calls, timing_complete FROM wall_time ORDER BY 1, 2
@@ -564,7 +564,7 @@ WHERE session_id = 's3' AND step_id = 3 ORDER BY chars DESC
 
 ### Was history compacted?
 
-`compactions` lists agent LLM calls whose input dropped messages that the previous agent call had.
+`compactions` lists agent LLM calls whose input lost conversation history. History means the previous agent call's input, plus the assistant and tool messages that any LLM call in between was sent. When a compaction call ran, its input holds the latest exchange too. Compaction calls are not agent steps, so `step_symbols` and the walk queries skip them.
 
 ```sql
 SELECT session_id, step_id, prev_step_id, dropped_messages, dropped_chars, via_compaction FROM compactions ORDER BY 1, 3
@@ -573,7 +573,7 @@ SELECT session_id, step_id, prev_step_id, dropped_messages, dropped_chars, via_c
 +------------+---------+--------------+------------------+---------------+----------------+
 | session_id | step_id | prev_step_id | dropped_messages | dropped_chars | via_compaction |
 +------------+---------+--------------+------------------+---------------+----------------+
-| s3         | 5       | 3            | 3                | 493           | true           |
+| s3         | 5       | 3            | 5                | 711           | true           |
 +------------+---------+--------------+------------------+---------------+----------------+
 ```
 

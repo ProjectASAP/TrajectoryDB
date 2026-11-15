@@ -5,7 +5,7 @@
 WITH h AS (SELECT session_id, step_id, unnest(bash_heads(command)) AS head FROM tool_calls WHERE fn = 'bash'),
 seq AS (
   SELECT session_id, stage, step_id, row_number() OVER (PARTITION BY session_id, stage ORDER BY step_id) AS pos
-  FROM steps WHERE source = 'agent'
+  FROM steps WHERE source = 'agent' AND coalesce(purpose, 'agent') = 'agent'
 ),
 hp AS (SELECT seq.*, h.head FROM seq JOIN h USING (session_id, step_id))
 SELECT a.head || ' → ' || b.head AS pattern, count(*) AS occurrences,

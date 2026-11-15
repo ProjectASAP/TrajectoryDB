@@ -2,7 +2,7 @@
 -- read logs within the next 3 agent steps (same session+stage), and are they logs of the same namespace X?
 WITH pos AS (
   SELECT session_id, stage, step_id, row_number() OVER (PARTITION BY session_id, stage ORDER BY step_id) AS n
-  FROM steps WHERE source = 'agent'
+  FROM steps WHERE source = 'agent' AND coalesce(purpose, 'agent') = 'agent'
 ), mns AS (
   SELECT DISTINCT p.session_id, p.stage, p.n, substr(m, 11) AS ns
   FROM (SELECT session_id, step_id, unnest(promql_matchers(query)) AS m FROM metric_results) q

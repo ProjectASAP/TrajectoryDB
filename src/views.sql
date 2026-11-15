@@ -76,7 +76,8 @@ WITH b AS (
 SELECT DISTINCT c.session_id, c.step_id, c.call_idx, st.stage, c.modality, c.ns AS namespace
 FROM c JOIN steps st USING (session_id, step_id);
 
--- step_symbols: every agent step with its position in (session, stage) and one symbol by priority
+-- step_symbols: every agent step with its position in (session, stage) and one symbol by priority.
+-- Agent steps exclude compaction LLM calls (purpose = 'compaction'), which summarize history rather than act.
 -- A(lerts) > M(etrics) > L(ogs) > K(8s state); NULL for other/no tools. Input for sequence-pattern walks (W7).
 -- syms: the full symbol set of the step (also C = k8s change, T = traces), for set-valued seq_match.
 -- metric_key: the step's sorted metric names joined by ',' (NULL without named metrics), a seq_match back-reference key.
@@ -93,15 +94,15 @@ SELECT st.session_id, st.stage, st.step_id,
   row_number() OVER (PARTITION BY st.session_id, st.stage ORDER BY st.step_id) AS pos, m.sym, coalesce(m.syms, []) AS syms,
   nullif(array_to_string(array_sort(p.metrics), ','), '') AS metric_key
 FROM steps st LEFT JOIN m USING (session_id, step_id) LEFT JOIN promql_steps p USING (session_id, step_id)
-WHERE st.source = 'agent';
+WHERE st.source = 'agent' AND coalesce(st.purpose, 'agent') = 'agent';
 
 -- Capture views (holmesgpt-sregym extra.capture). Sessions without capture data have no rows; NULL means not measured.
 
--- wall_time: per session and stage, the span from the first measured LLM/tool start to the last end, split into
--- LLM calls, tool calls (parallel calls counted once) and other (agent code, approvals, waiting). Seconds, rounded to ms.
--- llm_s + tool_s + other_s = wall_s when LLM and tool intervals don't overlap.
--- Only calls with both bounds count. timing_complete = false when capture_coverage lists a call of the stage
--- without timing; its time is then missing from every part, not added to other_s.
+-- wall_time: per stage of each session with capture data, the span from the first timed LLM/tool start to the last end,
+-- split into LLM calls, tool calls (parallel calls counted once) and other (agent code, approvals, waiting).
+-- Seconds, rounded to ms. llm_s + tool_s + other_s = wall_s when LLM and tool intervals don't overlap.
+-- Only calls with both bounds count. timing_complete = false when capture_coverage lists a call without timing for the
+-- stage (or with no stage); that call's time is missing from every part. A stage with no timed call has NULL times.
 CREATE VIEW wall_time AS
 WITH i AS (
   SELECT session_id, stage, 'llm' AS part, start_unix_s AS s, end_unix_s AS e FROM steps
@@ -109,24 +110,30 @@ WITH i AS (
   UNION ALL
   SELECT t.session_id, st.stage, 'tool', t.start_unix_s, t.end_unix_s
   FROM tool_calls t JOIN steps st USING (session_id, step_id) WHERE t.start_unix_s IS NOT NULL AND t.end_unix_s IS NOT NULL
-), m AS (
-  SELECT DISTINCT session_id, stage FROM capture_coverage WHERE kind IN ('missing_llm_timing', 'missing_tool_timing')
 ), w AS (
-SELECT session_id, stage, round(max(e) - min(s), 3) AS wall_s,
-  round(interval_union(s, e) FILTER (WHERE part = 'llm'), 3) AS llm_s,
-  round(interval_union(s, e) FILTER (WHERE part = 'tool'), 3) AS tool_s,
-  round(max(e) - min(s) - interval_union(s, e), 3) AS other_s,
-  count(*) FILTER (WHERE part = 'llm') AS llm_calls, count(*) FILTER (WHERE part = 'tool') AS tool_calls
-FROM i GROUP BY session_id, stage
+  SELECT session_id, stage, round(max(e) - min(s), 3) AS wall_s,
+    round(interval_union(s, e) FILTER (WHERE part = 'llm'), 3) AS llm_s,
+    round(interval_union(s, e) FILTER (WHERE part = 'tool'), 3) AS tool_s,
+    round(max(e) - min(s) - interval_union(s, e), 3) AS other_s,
+    count(*) FILTER (WHERE part = 'llm') AS llm_calls, count(*) FILTER (WHERE part = 'tool') AS tool_calls
+  FROM i GROUP BY session_id, stage
+), f AS (
+  SELECT x.session_id, x.stage, count(m.session_id) = 0 AS timing_complete
+  FROM (SELECT DISTINCT st.session_id, st.stage FROM steps st JOIN sessions USING (session_id) WHERE capture_version IS NOT NULL) x
+  LEFT JOIN capture_coverage m ON m.session_id = x.session_id AND (m.stage IS NULL OR m.stage = x.stage)
+    AND m.kind IN ('missing_llm_timing', 'missing_tool_timing')
+  GROUP BY x.session_id, x.stage
 )
-SELECT w.*, m.stage IS NULL AS timing_complete FROM w LEFT JOIN m USING (session_id, stage);
+SELECT f.session_id, f.stage, w.wall_s, w.llm_s, w.tool_s, w.other_s,
+  coalesce(w.llm_calls, 0) AS llm_calls, coalesce(w.tool_calls, 0) AS tool_calls, f.timing_complete
+FROM f LEFT JOIN w USING (session_id, stage);
 
 -- input_composition: each LLM call's input by part (message role, or tool_schemas), in characters;
 -- items = messages, or tool definitions for tool_schemas.
 -- est_prompt_tok apportions the call's prompt tokens by character share: an estimate, since tokens per character vary.
 CREATE VIEW input_composition AS
 WITH p AS (
-  SELECT session_id, step_id, role AS part, count(*) AS items, sum(chars + coalesce(tool_call_chars, 0)) AS chars
+  SELECT session_id, step_id, role AS part, count(*) AS items, sum(coalesce(chars, 0) + coalesce(tool_call_chars, 0)) AS chars
   FROM step_inputs GROUP BY session_id, step_id, role
   UNION ALL
   SELECT session_id, step_id, 'tool_schemas', tool_schema_count, tool_schema_chars FROM steps WHERE tool_schema_chars IS NOT NULL
@@ -137,16 +144,24 @@ SELECT t.session_id, t.step_id, st.stage, st.purpose, t.part, t.items, t.chars, 
   CAST(round(st.prompt_tok * t.share) AS BIGINT) AS est_prompt_tok
 FROM t JOIN steps st USING (session_id, step_id);
 
--- compactions: agent LLM calls whose input lost messages the previous agent call (same session and stage) had,
--- i.e. history was compacted or truncated. via_compaction: a purpose = 'compaction' call ran in between.
+-- compactions: agent LLM calls whose input lost conversation history, i.e. history was compacted or truncated.
+-- History before an agent call = the previous agent call's (same session and stage) input, plus the assistant and tool
+-- messages in the input of any LLM call in between. A compaction call's input carries the latest exchange; its
+-- instruction messages (system/user) are not history. Without a call in between, the previous call's response and
+-- tool results are never seen as inputs, so plain truncation is undercounted.
+-- via_compaction: a purpose = 'compaction' call ran in between.
 CREATE VIEW compactions AS
 WITH a AS (
   SELECT session_id, stage, step_id, lag(step_id) OVER (PARTITION BY session_id, stage ORDER BY step_id) AS prev_step_id
   FROM steps WHERE purpose = 'agent' AND step_id IN (SELECT step_id FROM step_inputs i WHERE i.session_id = steps.session_id)
+), h AS (
+  SELECT DISTINCT a.session_id, a.stage, a.step_id, a.prev_step_id, p.sha, coalesce(p.chars, 0) + coalesce(p.tool_call_chars, 0) AS chars
+  FROM a JOIN steps b ON b.session_id = a.session_id AND b.stage = a.stage AND b.step_id >= a.prev_step_id AND b.step_id < a.step_id
+  JOIN step_inputs p ON p.session_id = b.session_id AND p.step_id = b.step_id
+  WHERE b.step_id = a.prev_step_id OR p.role IN ('assistant', 'tool')
 ), d AS (
-  SELECT a.session_id, a.stage, a.step_id, a.prev_step_id, p.chars + coalesce(p.tool_call_chars, 0) AS chars
-  FROM a JOIN step_inputs p ON p.session_id = a.session_id AND p.step_id = a.prev_step_id
-  LEFT JOIN step_inputs c ON c.session_id = a.session_id AND c.step_id = a.step_id AND c.sha = p.sha
+  SELECT h.* FROM h
+  LEFT JOIN step_inputs c ON c.session_id = h.session_id AND c.step_id = h.step_id AND c.sha = h.sha
   WHERE c.sha IS NULL
 ), g AS (
   SELECT session_id, stage, step_id, prev_step_id, count(*) AS dropped_messages, sum(chars) AS dropped_chars

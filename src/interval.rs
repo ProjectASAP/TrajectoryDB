@@ -12,8 +12,8 @@ use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::{Accumulator, AggregateUDF, Signature, SimpleAggregateUDF, Volatility};
 use std::sync::Arc;
 
-/// Sort by start, merge overlapping or touching intervals, sum their lengths.
-fn union_length(mut v: Vec<(f64, f64)>) -> Option<f64> {
+/// Sort by start (in place), merge overlapping or touching intervals, sum their lengths.
+fn union_length(v: &mut [(f64, f64)]) -> Option<f64> {
     if v.is_empty() { return None }
     v.sort_by(|a, b| a.0.total_cmp(&b.0));
     let (mut total, (mut lo, mut hi)) = (0.0, v[0]);
@@ -56,7 +56,7 @@ impl Accumulator for Acc {
         Ok(())
     }
 
-    fn evaluate(&mut self) -> Result<ScalarValue> { Ok(ScalarValue::Float64(union_length(self.v.clone()))) }
+    fn evaluate(&mut self) -> Result<ScalarValue> { Ok(ScalarValue::Float64(union_length(&mut self.v))) }
 
     fn size(&self) -> usize { std::mem::size_of_val(self) + 16 * self.v.capacity() }
 }
@@ -78,11 +78,11 @@ mod tests {
     use super::union_length;
     #[test]
     fn union() {
-        assert_eq!(union_length(vec![]), None);
-        assert_eq!(union_length(vec![(0.0, 1.0)]), Some(1.0));
+        assert_eq!(union_length(&mut []), None);
+        assert_eq!(union_length(&mut [(0.0, 1.0)]), Some(1.0));
         // overlapping (parallel calls) count once; a gap is not counted
-        assert!((union_length(vec![(2.2, 3.5), (2.0, 3.0), (5.6, 6.0)]).unwrap() - 1.9).abs() < 1e-9);
+        assert!((union_length(&mut [(2.2, 3.5), (2.0, 3.0), (5.6, 6.0)]).unwrap() - 1.9).abs() < 1e-9);
         // nested and touching
-        assert_eq!(union_length(vec![(0.0, 10.0), (1.0, 2.0), (10.0, 11.0)]), Some(11.0));
+        assert_eq!(union_length(&mut [(0.0, 10.0), (1.0, 2.0), (10.0, 11.0)]), Some(11.0));
     }
 }
