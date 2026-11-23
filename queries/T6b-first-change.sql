@@ -3,7 +3,7 @@
 -- agent steps into the stage the first change happened; split by that stage's outcome.
 WITH pos AS (
   SELECT session_id, stage, step_id, row_number() OVER (PARTITION BY session_id, stage ORDER BY step_id) AS n
-  FROM steps WHERE source = 'agent'
+  FROM steps WHERE source = 'agent' AND coalesce(purpose, 'agent') = 'agent'
 ), first AS (
   SELECT tc.session_id, tc.stage, min(p.n) AS first_change_at
   FROM telemetry_calls tc JOIN pos p USING (session_id, stage, step_id)

@@ -22,11 +22,12 @@ cargo build --release
 | `tdb examples [--update]` | check every example in EXAMPLES.md against `examples/fixture` |
 | `tdb synth <N> <dir>` | N× replicated corpus, for timing |
 
-Env: `TDB_DB` (db dir), `TDB_DEFS` (startup SQL, default `defs.sql`), `TDB_LAZY=1` (ignore materialized views), `TDB_LLM_*` (see EXAMPLES §6).
+Env: `TDB_DB` (db dir), `TDB_DEFS` (startup SQL, default `defs.sql`), `TDB_LAZY=1` (ignore materialized views), `TDB_LLM_*` (see EXAMPLES §7).
 
 ## Where to look
 
 - **[EXAMPLES.md](EXAMPLES.md)**: the user guide. Tables, functions and every kind of analysis, with runnable examples.
+- `scripts/capture_fixture.py`: regenerates the capture-format fixture session (s3) with holmesgpt-sregym's exporter.
 - `queries/`: full-corpus analyses with golden outputs (`T*` tool calls, `W*` walks and patterns, `X*` run comparisons, `llm/` LLM-based).
-- `src/`: `main.rs` (CLI, ingest), `views.sql` (derived views), `promql.rs`/`shell.rs` (parsers), `seq.rs` (`seq_match`), `align.rs` (run alignment), `llm.rs` (`llm()`), `udf.rs` (`CREATE FUNCTION`).
+- `src/`: `main.rs` (CLI, ingest), `views.sql` (derived views), `promql.rs`/`shell.rs` (parsers), `seq.rs` (`seq_match`), `interval.rs` (`interval_union`), `align.rs` (run alignment), `llm.rs` (`llm()`), `udf.rs` (`CREATE FUNCTION`).
 - [PLAN.md](PLAN.md) (design and milestones), [STATUS.md](STATUS.md) (what is done, findings, open issues).

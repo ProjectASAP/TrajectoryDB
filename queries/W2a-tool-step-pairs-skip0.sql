@@ -9,7 +9,7 @@ WITH lab AS (
   SELECT st.session_id, st.stage, lab.label,
          row_number() OVER (PARTITION BY st.session_id, st.stage ORDER BY st.step_id) AS pos
   FROM steps st LEFT JOIN lab USING (session_id, step_id)
-  WHERE st.source = 'agent'
+  WHERE st.source = 'agent' AND coalesce(st.purpose, 'agent') = 'agent'
 ), pairs AS (
   SELECT a.session_id, a.label || ' → ' || b.label AS pattern
   FROM seq a JOIN seq b ON a.session_id = b.session_id AND a.stage = b.stage AND b.pos = a.pos + 1
